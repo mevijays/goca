@@ -38,6 +38,9 @@ this file — what goca is and does, the REST API, and how it's built.
   goca to keep it. Private keys are AES-256-GCM encrypted at rest.
 - **Full certificate lifecycle.** Issue, renew/rotate, revoke, hold/release,
   bulk-revoke by filter, retire whole authorities with cascading revocation.
+- **An SSL utility open to anyone.** Decode a certificate, key or CSR - paste,
+  upload, or a cert+key pair to check they match - with no account needed and
+  nothing stored. See [SSL utility](#the-ssl-utility).
 - **ACME for private domains.** An RFC 8555 server, External Account Binding
   only — no HTTP-01/DNS-01 challenge is ever validated, which is what makes it
   usable for internal zones cert-manager and friends could never prove
@@ -230,6 +233,30 @@ The web portal has the same three flows: a request form with a
 generate-or-paste-CSR toggle, and a standalone CSR generator under **CSR tool**.
 Full flags: **[USAGE.md — goca cert](USAGE.md#goca-cert)**,
 **[goca csr](USAGE.md#goca-csr)**.
+
+Just need to decode a certificate, private key or CSR someone handed you - the
+`openssl x509/req/pkey -text -noout` you'd otherwise reach for a terminal for?
+**SSL utility** (`/tools/ssl`) does that: paste or upload one, or a cert and
+its key together to check they match. It needs no account - even a signed-out
+visitor can use it - and nothing submitted to it is ever stored or logged.
+
+### The SSL utility
+
+`/tools/ssl` is goca's `openssl x509/req/pkey -text -noout` equivalent: paste
+or upload a certificate, private key or CSR to see it decoded - subject,
+issuer, SANs, validity, key usage, fingerprints, the works. Paste a
+certificate and its private key together and it reports whether they actually
+match, using the same comparison as `openssl x509 -noout -pubkey | openssl
+pkey -pubin -outform der | sha256sum`, without you having to run it.
+
+It's reachable without signing in (there's a link on the login page), because
+there's nothing to protect: nothing submitted is stored, logged, or written
+to the database, and a submitted private key's own material is never echoed
+back either - only its type and a fingerprint of its public half, which is
+what the match check compares.
+
+There's a CLI equivalent for certificates and CSRs too:
+**[goca inspect](USAGE.md#goca-inspect)**.
 
 ### Finding and re-downloading, later
 

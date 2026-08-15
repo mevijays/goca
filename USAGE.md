@@ -688,6 +688,11 @@ goca inspect app.csr
 openssl s_client -connect example.com:443 </dev/null 2>/dev/null | goca inspect -
 ```
 
+The web portal has a fuller equivalent at `/tools/ssl` (the **SSL utility**
+nav tab) that also handles private keys and checks whether a pasted
+certificate and key match. It needs no account — see
+[README.md — The SSL utility](README.md#the-ssl-utility).
+
 ---
 
 ## `goca user`

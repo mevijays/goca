@@ -70,6 +70,23 @@ func (s *Server) requireUser(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// optionalUser wraps a page handler that must work for anonymous visitors:
+// a valid session is attached to the request context when present, exactly
+// like requireUser, but an absent or invalid one does not redirect or block
+// - the handler runs either way. Used for pages that are useful without an
+// account (the SSL utility) but should still show the logged-in chrome and
+// active nav item for a user who reaches them while signed in.
+func (s *Server) optionalUser(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if u, token := s.userFromRequest(r); u != nil {
+			ctx = context.WithValue(ctx, ctxUser, u)
+			ctx = context.WithValue(ctx, ctxToken, token)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // requireAdmin additionally enforces the admin role.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
 	return s.requireUser(func(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -244,7 +245,7 @@ func TestLoginAndBrowsePages(t *testing.T) {
 
 	for _, path := range []string{
 		"/", "/cas", "/cas/new", "/certificates", "/certificates/new",
-		"/tools/csr", "/settings", "/audit",
+		"/tools/csr", "/tools/ssl", "/settings", "/audit",
 		"/cas/1", "/cas/1/download/ca.crt", "/cas/1/download/chain.pem", "/cas/1/download/bundle.zip",
 	} {
 		rec := h.get(path, cookies)
@@ -562,6 +563,189 @@ func TestSecurityHeadersArePresent(t *testing.T) {
 	}
 	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
 		t.Errorf("unexpected CSP: %q", csp)
+	}
+}
+
+//
+// ---------- SSL utility ----------
+//
+
+// selfSignedTestCert builds a throwaway self-signed cert/key pair, entirely
+// independent of the harness's own CA, for feeding to the SSL utility.
+func selfSignedTestCert(t *testing.T, cn string) (certPEM, keyPEM string) {
+	t.Helper()
+	key, err := pki.GenerateKey(pki.KeyECP256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := key.(crypto.Signer)
+	serial, _ := pki.NewSerial()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().AddDate(1, 0, 0),
+		DNSNames:     []string{cn},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, signer.Public(), signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := pki.EncodePrivateKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pki.EncodeCertPEM(der)), string(keyBytes)
+}
+
+// sslInspect POSTs to /tools/ssl with no cookies at all, proving the
+// endpoint needs neither a session nor a CSRF token.
+func (h *harness) sslInspect(input string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/tools/ssl",
+		strings.NewReader(url.Values{"input_text": {input}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return h.do(req)
+}
+
+func TestSSLUtilityIsAnonymous(t *testing.T) {
+	h := newHarness(t)
+	rec := h.get("/tools/ssl", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /tools/ssl unauthenticated returned %d, want 200: %s", rec.Code, truncBody(rec))
+	}
+	if !strings.Contains(rec.Body.String(), "SSL utility") {
+		t.Error("the page did not render")
+	}
+}
+
+func TestSSLUtilityKeyMatchesItsCertificate(t *testing.T) {
+	h := newHarness(t)
+	certPEM, keyPEM := selfSignedTestCert(t, "match.test")
+
+	rec := h.sslInspect(certPEM + "\n" + keyPEM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /tools/ssl returned %d, want 200: %s", rec.Code, truncBody(rec))
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Certificate #1", "match.test", "Private key", `badge ok">&check; Certificate #1`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q:\n%s", want, body)
+		}
+	}
+	// The private key's own material must never be echoed back - not in the
+	// decoded summary, and not in the textarea the form redisplays either.
+	// Checked one base64 line at a time (not the whole multi-line body) so a
+	// partial leak fails this just as loudly as a full one.
+	for _, line := range strings.Split(keyPEM, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "-----") {
+			continue
+		}
+		if strings.Contains(body, line) {
+			t.Errorf("the response leaked a line of the private key's own PEM body: %q", line)
+		}
+	}
+}
+
+func TestSSLUtilityKeyDoesNotMatchUnrelatedCertificate(t *testing.T) {
+	h := newHarness(t)
+	certPEM, _ := selfSignedTestCert(t, "cert-a.test")
+	_, otherKeyPEM := selfSignedTestCert(t, "cert-b.test")
+
+	rec := h.sslInspect(certPEM + "\n" + otherKeyPEM)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /tools/ssl returned %d: %s", rec.Code, truncBody(rec))
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "badge ok\">&check;") {
+		t.Error("an unrelated key was reported as matching the certificate")
+	}
+	if !strings.Contains(body, "no other block in this input shares this key") {
+		t.Error("expected a no-match message for an unrelated key")
+	}
+}
+
+func TestSSLUtilityParsesACSR(t *testing.T) {
+	h := newHarness(t)
+	tok := h.token(store.RoleUser)
+	rec, out := h.apiJSON(http.MethodPost, "/api/v1/csr",
+		`{"subject":{"common_name":"csr.test"},"key_type":"ec-p256"}`, tok)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("CSR generation returned %d: %s", rec.Code, truncBody(rec))
+	}
+	csrPEM, _ := out["csr_pem"].(string)
+
+	rec2 := h.sslInspect(csrPEM)
+	body := rec2.Body.String()
+	if !strings.Contains(body, "Certificate signing request") || !strings.Contains(body, "csr.test") {
+		t.Errorf("CSR was not decoded:\n%s", truncBody(rec2))
+	}
+	if !strings.Contains(body, "signature verifies") {
+		t.Error("a validly signed CSR should report its signature verifies")
+	}
+}
+
+func TestSSLUtilityRejectsGarbageInput(t *testing.T) {
+	h := newHarness(t)
+	rec := h.sslInspect("this is not PEM data at all")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned %d, want 200 (a friendly error, not a 500)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "No PEM data found") {
+		t.Error("expected a friendly \"no PEM data\" message")
+	}
+}
+
+func TestSSLUtilityReportsAPerBlockParseError(t *testing.T) {
+	h := newHarness(t)
+	// Well-formed PEM armor, garbage DER inside - decodes as a block, fails
+	// to parse as a certificate.
+	bad := "-----BEGIN CERTIFICATE-----\n" +
+		"bm90IGEgcmVhbCBjZXJ0aWZpY2F0ZSBkZXIgY29udGVudA==\n" +
+		"-----END CERTIFICATE-----\n"
+	rec := h.sslInspect(bad)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Certificate #1") || !strings.Contains(body, "badge danger") {
+		t.Errorf("expected a per-block error, got:\n%s", truncBody(rec))
+	}
+}
+
+func TestSSLUtilityAcceptsFileUpload(t *testing.T) {
+	h := newHarness(t)
+	certPEM, _ := selfSignedTestCert(t, "upload.test")
+
+	var buf strings.Builder
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("input_file", "leaf.crt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.Write([]byte(certPEM))
+	mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/tools/ssl", strings.NewReader(buf.String()))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := h.do(req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned %d: %s", rec.Code, truncBody(rec))
+	}
+	if !strings.Contains(rec.Body.String(), "upload.test") {
+		t.Error("an uploaded certificate file was not decoded")
+	}
+}
+
+func TestSSLUtilityOversizedBodyIsRejectedNotCrashed(t *testing.T) {
+	h := newHarness(t)
+	huge := strings.Repeat("A", 3<<20) // over the 2 MB cap
+	rec := h.sslInspect(huge)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned %d, want a friendly 200 error page", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "2 MB max") {
+		t.Error("expected the oversized-body message")
 	}
 }
 

@@ -1,0 +1,130 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>SSL utility</h1>
+    <p class="subtitle">Paste or upload a certificate, private key or CSR to decode it - the
+       <span class="mono">openssl x509/req/pkey -text -noout</span> you'd otherwise reach for a
+       terminal for. Nothing here is stored: not the input, not the result, not even in the audit
+       log. Works without signing in.</p>
+  </div>
+</div>
+
+<form method="post" action="/tools/ssl" enctype="multipart/form-data" class="card">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <div class="field">
+    <label for="input_text">Paste PEM text</label>
+    <textarea id="input_text" name="input_text" rows="10" spellcheck="false"
+              placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----
+
+Paste a certificate, private key and/or CSR - one, or several at once (e.g. a
+cert and its key together, to check they match).">{{$d.Input}}</textarea>
+  </div>
+  <div class="field">
+    <label for="input_file">...or upload a file</label>
+    <input type="file" id="input_file" name="input_file" accept=".pem,.crt,.cer,.csr,.key,.txt">
+  </div>
+  <div class="btn-row">
+    <button class="btn" type="submit">Decode</button>
+  </div>
+</form>
+
+{{if $d.Result}}
+  {{if $d.Result.Error}}
+  <div class="flash error">{{$d.Result.Error}}</div>
+  {{else}}
+  {{range $i, $b := $d.Result.Blocks}}
+  <div class="card">
+    <div class="card-head" style="margin:-18px -18px 16px">
+      <h2>
+        {{$b.Label}}
+        {{if $b.Error}}<span class="badge danger">error</span>
+        {{else if eq $b.Kind "certificate"}}<span class="badge {{if $b.Cert.IsCA}}admin{{else}}ok{{end}}">{{if $b.Cert.IsCA}}CA{{else}}leaf{{end}}</span>
+        {{else if eq $b.Kind "csr"}}<span class="badge">CSR</span>
+        {{else if eq $b.Kind "key"}}<span class="badge">private key</span>{{end}}
+      </h2>
+    </div>
+
+    {{if $b.Error}}
+    <p class="flash error" style="margin:0">{{$b.Error}}</p>
+
+    {{else if $b.Cert}}
+    <dl class="dl">
+      <dt>Subject</dt><dd class="mono">{{$b.Cert.Subject}}</dd>
+      <dt>Issuer</dt><dd class="mono">{{$b.Cert.Issuer}}</dd>
+      <dt>Serial</dt><dd class="mono">{{$b.Cert.Serial}}</dd>
+      <dt>SANs</dt><dd class="mono">{{if $b.Cert.SANs}}{{join $b.Cert.SANs ", "}}{{else}}none{{end}}</dd>
+      <dt>Validity</dt>
+      <dd>{{fmtTime $b.Cert.NotBefore}} &rarr; {{fmtTime $b.Cert.NotAfter}}
+        <span class="badge {{expiryClass $b.Cert.DaysRemaining}}">
+          {{if lt $b.Cert.DaysRemaining 0}}expired{{else}}{{$b.Cert.DaysRemaining}} days left{{end}}
+        </span>
+      </dd>
+      <dt>Is a CA</dt><dd>{{if $b.Cert.IsCA}}yes{{else}}no{{end}}</dd>
+      <dt>Key type</dt><dd>{{$b.Cert.KeyType}}</dd>
+      <dt>Signature</dt><dd>{{$b.Cert.SignatureAlgorithm}}</dd>
+      {{if $b.Cert.KeyUsage}}<dt>Key usage</dt><dd class="mono">{{join $b.Cert.KeyUsage ", "}}</dd>{{end}}
+      {{if $b.Cert.ExtKeyUsage}}<dt>Extended key usage</dt><dd class="mono">{{join $b.Cert.ExtKeyUsage ", "}}</dd>{{end}}
+      {{if $b.Cert.SubjectKeyID}}<dt>Subject key ID</dt><dd class="mono">{{$b.Cert.SubjectKeyID}}</dd>{{end}}
+      {{if $b.Cert.AuthorityKeyID}}<dt>Authority key ID</dt><dd class="mono">{{$b.Cert.AuthorityKeyID}}</dd>{{end}}
+      {{if $b.Cert.CRLDistPoints}}<dt>CRL distribution points</dt><dd class="mono">{{join $b.Cert.CRLDistPoints ", "}}</dd>{{end}}
+      {{if $b.Cert.OCSPServers}}<dt>OCSP servers</dt><dd class="mono">{{join $b.Cert.OCSPServers ", "}}</dd>{{end}}
+      <dt>SHA-256 fingerprint</dt><dd class="mono">{{$b.Cert.FingerprintSHA256}}</dd>
+    </dl>
+
+    {{else if $b.CSR}}
+    <dl class="dl">
+      <dt>Subject</dt><dd class="mono">{{$b.CSR.Subject}}</dd>
+      <dt>SANs</dt><dd class="mono">{{if $b.CSR.SANs}}{{join $b.CSR.SANs ", "}}{{else}}none{{end}}</dd>
+      <dt>Key type</dt><dd>{{$b.CSR.KeyType}}</dd>
+      <dt>Signature</dt><dd>{{$b.CSR.SignatureAlgorithm}}
+        <span class="badge ok">signature verifies</span></dd>
+    </dl>
+    <div class="btn-row">
+      <a class="btn secondary" href="/certificates/new?mode=csr">Sign this CSR with a goca authority</a>
+    </div>
+
+    {{else if $b.Key}}
+    <dl class="dl">
+      <dt>Key type</dt><dd>{{$b.Key.KeyType}}</dd>
+      <dt>Public key fingerprint</dt><dd class="mono">{{$b.Key.SPKIFingerprint}}</dd>
+      <dt>Matches</dt>
+      <dd>
+        {{if $b.Key.Matches}}
+          <span class="badge ok">&check; {{join $b.Key.Matches " and "}}</span>
+        {{else}}
+          <span class="dim">no other block in this input shares this key</span>
+        {{end}}
+      </dd>
+    </dl>
+    <p class="hint">The private key itself is never shown or stored - only its type and a
+       fingerprint of its public half, which is what "matches" compares.</p>
+    {{end}}
+
+    {{if ne $b.Kind "key"}}
+    <details style="margin-top:12px">
+      <summary class="hint" style="cursor:pointer">Raw PEM</summary>
+      <div class="copy-wrap" style="margin-top:8px">
+        <pre class="pem" id="block-{{$i}}">{{$b.PEM}}</pre>
+        <button class="copy-btn" data-copy="#block-{{$i}}" type="button">copy</button>
+      </div>
+    </details>
+    {{end}}
+  </div>
+  {{end}}
+  {{end}}
+{{end}}
+
+<div class="card">
+  <h2>The openssl equivalent</h2>
+  <dl class="dl">
+    <dt>Certificate</dt><dd class="mono">openssl x509 -in cert.pem -text -noout</dd>
+    <dt>CSR</dt><dd class="mono">openssl req -in file.csr -text -noout</dd>
+    <dt>Private key</dt><dd class="mono">openssl pkey -in file.key -text -noout</dd>
+    <dt>Does a key match a cert?</dt>
+    <dd class="mono">openssl x509 -noout -pubkey -in cert.pem | openssl pkey -pubin -outform der | sha256sum</dd>
+  </dl>
+  <p class="hint">Paste the certificate and key together above and the "Matches" line does that
+     last comparison for you.</p>
+</div>
+{{end}}

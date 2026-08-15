@@ -123,6 +123,14 @@ func (s *Server) Handler() http.Handler {
 	page("GET /tools/csr", s.handleCSRToolForm)
 	page("POST /tools/csr", s.handleCSRToolSubmit)
 
+	// The SSL utility works for anonymous visitors on purpose (see
+	// handleSSLToolSubmit): it never touches the database, so there's no
+	// account to require. optionalUser still attaches a session when one
+	// exists, so a signed-in user reaching it via the nav tab keeps the
+	// normal portal chrome.
+	mux.Handle("GET /tools/ssl", s.optionalUser(s.handleSSLToolForm))
+	mux.Handle("POST /tools/ssl", s.optionalUser(s.handleSSLToolSubmit))
+
 	page("GET /settings", s.handleSettings)
 	page("POST /settings/password", s.handleChangePassword)
 	page("POST /settings/tokens", s.handleTokenCreate)
