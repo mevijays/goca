@@ -52,7 +52,12 @@
     document.querySelectorAll("[data-mode]").forEach(function (el) {
       var want = el.getAttribute("data-mode").split(" ");
       el.hidden = want.indexOf(mode.value) === -1;
-      el.querySelectorAll("[required]").forEach(function (input) {
+      // Disable every field in a hidden section, not just required ones -
+      // otherwise a same-named field left over from another mode (e.g. two
+      // modes each having their own "Display name" box) gets submitted
+      // alongside the one actually in use, and the server reads whichever
+      // came first in the form rather than the one you filled in.
+      el.querySelectorAll("input, select, textarea").forEach(function (input) {
         input.disabled = el.hidden;
       });
     });
