@@ -188,6 +188,23 @@ func TestHandlerRegistersAllRoutes(t *testing.T) {
 	}
 }
 
+// TestOIDCRoutesAreDisabledByDefault guards the common case (no OIDC
+// configured): the routes exist but 404 rather than panicking or redirecting
+// somewhere odd, and the login page doesn't offer an SSO button nobody could
+// use.
+func TestOIDCRoutesAreDisabledByDefault(t *testing.T) {
+	h := newHarness(t)
+	for _, path := range []string{"/auth/oidc/login", "/auth/oidc/callback"} {
+		if rec := h.get(path, nil); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s with OIDC unconfigured returned %d, want 404", path, rec.Code)
+		}
+	}
+	login := h.get("/login", nil).Body.String()
+	if strings.Contains(login, "Sign in with SSO") {
+		t.Error("the login page offered SSO with no OIDC provider configured")
+	}
+}
+
 func TestPublicEndpointsNeedNoAuth(t *testing.T) {
 	h := newHarness(t)
 

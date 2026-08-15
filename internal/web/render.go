@@ -214,12 +214,14 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, errMsg, nex
 		Version:  Version,
 		AuthMode: string(s.cfg.Auth.Mode),
 		Data: map[string]any{
-			"Error":      errMsg,
-			"Next":       next,
-			"LDAP":       s.auth.LDAPEnabled(),
-			"Local":      s.auth.LocalEnabled(),
-			"AuthMode":   string(s.cfg.Auth.Mode),
-			"ServerName": s.cfg.Server.BaseURL,
+			"Error":        errMsg,
+			"Next":         next,
+			"LDAP":         s.auth.LDAPEnabled(),
+			"Local":        s.auth.LocalEnabled(),
+			"OIDC":         s.auth.OIDCEnabled(),
+			"OIDCLoginURL": oidcLoginURL(next),
+			"AuthMode":     string(s.cfg.Auth.Mode),
+			"ServerName":   s.cfg.Server.BaseURL,
 		},
 	}
 	var buf bytes.Buffer

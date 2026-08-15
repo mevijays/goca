@@ -598,6 +598,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"DefaultCADays":   s.cfg.CA.DefaultCADays,
 		"CRLDays":         s.cfg.CA.CRLDays,
 		"LDAP":            s.cfg.Auth.LDAP,
+		"OIDC":            s.cfg.Auth.OIDC,
 	}
 	if u.IsAdmin() {
 		users, _ := s.svc.Store().ListUsers(ctx)

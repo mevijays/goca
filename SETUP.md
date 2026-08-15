@@ -19,6 +19,7 @@ an existing install. For day-to-day CLI usage once you're running, see
 - [Installing as a service](#installing-as-a-service)
 - [TLS](#tls)
 - [LDAP setup](#ldap-setup)
+- [Single sign-on (OIDC) setup](#single-sign-on-oidc-setup)
 - [First certificate authority](#first-certificate-authority)
 - [Running underneath an existing CA](#running-underneath-an-existing-ca)
 - [Trusting the CA on clients](#trusting-the-ca-on-clients)
@@ -76,7 +77,10 @@ This is a guided wizard. It asks for, in order:
    right if certificates need to carry a working CRL URL).
 4. **Authentication mode** — local, LDAP, or both. Choosing LDAP or both walks
    you through the full directory configuration (see
-   [LDAP setup](#ldap-setup)).
+   [LDAP setup](#ldap-setup)). Right after, it separately asks whether to
+   enable OIDC/SSO too (see [Single sign-on (OIDC) setup](#single-sign-on-oidc-setup))
+   - it composes with whatever you picked above rather than being a fourth
+     mutually-exclusive choice.
 5. **Local administrator** — a username and password for the break-glass
    account that always works, even if LDAP is down. Leave the password blank
    and one is generated and printed once at the end.
@@ -160,6 +164,24 @@ prompting entirely — anything not given a flag falls back to its default.
 | `--ldap-admin-group` | — | group whose members get the admin role (repeatable) |
 | `--ldap-allowed-group` | — | restrict login to these groups (repeatable) |
 
+**OIDC / SSO** (only matters when `--oidc` is set; see [Single sign-on (OIDC) setup](#single-sign-on-oidc-setup))
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--oidc` | off | enable OIDC/SSO authentication |
+| `--oidc-issuer-url` | — | the provider's issuer URL (discovery is fetched from `<url>/.well-known/openid-configuration`) |
+| `--oidc-client-id` | — | OAuth2 client ID registered with the provider |
+| `--oidc-client-secret` | — | OAuth2 client secret (encrypted in the config) |
+| `--oidc-redirect-url` | `<base-url>/auth/oidc/callback` | callback URL registered with the provider |
+| `--oidc-scope` | `openid`, `profile`, `email` | OAuth2 scopes to request (repeatable) |
+| `--oidc-insecure` | off | skip TLS certificate verification talking to the issuer (lab use only) |
+| `--oidc-claim-username` | `preferred_username` | ID token claim for the username |
+| `--oidc-claim-display-name` | `name` | ID token claim for the display name |
+| `--oidc-claim-email` | `email` | ID token claim for the email address |
+| `--oidc-claim-groups` | `groups` | ID token claim for group membership |
+| `--oidc-admin-group` | — | group whose members get the admin role (repeatable) |
+| `--oidc-allowed-group` | — | restrict login to these groups (repeatable) |
+
 **Certificate defaults**
 
 | Flag | Default | Meaning |
@@ -192,6 +214,21 @@ With LDAP, a fully unattended example:
     --ldap-group-base-dn 'ou=groups,dc=example,dc=com' \
     --ldap-admin-group 'cn=ca-admins,ou=groups,dc=example,dc=com'
 ```
+
+With OIDC, a fully unattended example against Dex:
+
+```bash
+./goca setup --non-interactive \
+    --admin-user admin --admin-password 'S3cret!!' \
+    --base-url https://ca.example.com \
+    --oidc --oidc-issuer-url https://dex.example.com \
+    --oidc-client-id goca --oidc-client-secret 'S3cret!!' \
+    --oidc-admin-group ca-admins
+```
+
+See [Single sign-on (OIDC) setup](#single-sign-on-oidc-setup) for the details - registering the
+client with a provider, what each claim/group flag does, and worked examples
+for Dex and Azure Entra ID.
 
 ## What setup produces
 
@@ -256,6 +293,20 @@ auth:
     admin_groups: ["cn=ca-admins,ou=groups,dc=example,dc=com"]
     allowed_groups: []
     timeout: 10s
+  oidc:
+    enabled: true
+    issuer_url: https://dex.example.com
+    client_id: goca
+    client_secret: "enc:v1:...."     # encrypted with master_key
+    redirect_url: https://ca.example.com/auth/oidc/callback
+    scopes: [openid, profile, email]
+    insecure_skip_verify: false
+    claim_username: ""                # blank = default (preferred_username, falls back to email, sub)
+    claim_display_name: ""            # blank = default (name)
+    claim_email: ""                   # blank = default (email)
+    claim_groups: ""                  # blank = default (groups)
+    admin_groups: ["ca-admins"]
+    allowed_groups: []
 ca:
   default_cert_days: 397
   default_ca_days: 3650
@@ -429,6 +480,95 @@ goca ldap test              # connectivity, service bind, search base
 goca ldap login alice       # a full login: prompts for the password,
                              # shows the resolved DN, groups, and role
 ```
+
+## Single sign-on (OIDC) setup
+
+goca can authenticate portal users against any standards-compliant OpenID
+Connect provider - Dex, Keycloak, Okta, Google, Azure Entra ID, or anything
+else that publishes OIDC discovery at `<issuer>/.well-known/openid-configuration`.
+It's independent of `auth.mode`/LDAP: enable it during `goca setup` (the
+wizard asks separately, right after the LDAP section) or with the `--oidc-*`
+flags above, or add it later by hand-editing `auth.oidc` in the config file
+and restarting the portal.
+
+**Registering goca as a client**, whatever the provider:
+
+1. Create an OAuth2/OIDC client (sometimes called an "application").
+2. Set its redirect/callback URL to `<your base_url>/auth/oidc/callback`
+   exactly - this must match `auth.oidc.redirect_url` in the config.
+3. Note the issuer URL, client ID and client secret; goca needs all three.
+
+**Dex** ([dexidp/dex](https://github.com/dexidp/dex)), a minimal setup with a
+static client:
+
+```yaml
+# dex config.yaml
+issuer: https://dex.example.com
+staticClients:
+  - id: goca
+    secret: <a random secret>
+    redirectURIs:
+      - https://ca.example.com/auth/oidc/callback
+```
+
+```bash
+goca setup --non-interactive --admin-user admin --admin-password 'S3cret!!' \
+    --base-url https://ca.example.com \
+    --oidc --oidc-issuer-url https://dex.example.com \
+    --oidc-client-id goca --oidc-client-secret '<the random secret>'
+```
+
+**Azure Entra ID:** register an app under Entra ID → App registrations, add
+`https://ca.example.com/auth/oidc/callback` as a Web redirect URI, create a
+client secret under Certificates & secrets, and use the v2 issuer URL:
+
+```bash
+goca setup --non-interactive --admin-user admin --admin-password 'S3cret!!' \
+    --base-url https://ca.example.com \
+    --oidc --oidc-issuer-url https://login.microsoftonline.com/<tenant-id>/v2.0 \
+    --oidc-client-id <application-client-id> \
+    --oidc-client-secret '<the client secret value>'
+```
+
+Entra ID does not emit a `groups` claim by default - add "Groups" under the
+app registration's Token configuration → Optional claims (ID) before setting
+`--oidc-admin-group`/`--oidc-allowed-group`, or those will never match.
+**Keycloak** and **Okta** work the same way: their issuer URLs are
+`https://<host>/realms/<realm>` and `https://<domain>/oauth2/default`
+respectively, and both emit a `groups` claim once you add a groups mapper /
+authorization server claim for it.
+
+Key points:
+
+- Local login stays available alongside OIDC unless `--auth-mode ldap` turns
+  it off - the same flag LDAP-only setups use, since `auth.mode` only ever
+  governs local, independent of what's enabled below it. Keeping local on is
+  the recommended default: a provider outage or a misconfigured claim
+  otherwise locks every admin out at once.
+- `oidc_admin_group` (config: `admin_groups`) grants the admin role to
+  members of the listed groups; without it, everyone who signs in gets the
+  `user` role. `allowed_groups`, if non-empty, restricts login to members of
+  at least one listed group - matched case-insensitively against the groups
+  claim's values.
+- `claim_groups` names which ID token (or userinfo) claim carries group
+  membership; leave it unset for the `groups` default. There's no separate
+  switch to turn group-based roles off - leaving `admin_groups` and
+  `allowed_groups` both empty already has that effect (everyone who signs in
+  gets the `user` role, nobody is excluded).
+- The username claim defaults to `preferred_username`, falling back to
+  `email` then `sub` (guaranteed present per the OIDC spec) if that claim is
+  absent - Dex's built-in password database, for example, doesn't emit
+  `preferred_username`, so accounts end up keyed by email there.
+- The client secret is encrypted with the master key before being written to
+  disk (`enc:v1:...` prefix), exactly like the LDAP bind password.
+- OIDC discovery happens lazily, on the first actual sign-in attempt through
+  it - not at `goca run web` startup or on every CLI command - so a
+  temporarily unreachable provider never blocks anything else goca does.
+- Verify a configuration by actually signing in: open the portal, click
+  **Sign in with SSO**, and complete the provider's login. The Settings page
+  (admins only) shows the active issuer, client ID, redirect URL, scopes and
+  group configuration - handy for confirming what's actually loaded without
+  it echoing the secret back.
 
 ## First certificate authority
 

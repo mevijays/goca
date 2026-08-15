@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -95,7 +96,12 @@ type SecurityConfig struct {
 	SecureCookies bool `yaml:"secure_cookies"`
 }
 
-// AuthMode selects which credential sources are accepted at login.
+// AuthMode selects whether local password login is offered alongside
+// whatever of LDAP/OIDC is enabled below. Unlike those two - each independently
+// toggled by its own Enabled flag - Mode only ever gates local: "ldap" turns
+// it off (directory-only, no break-glass fallback), "local" and "both" leave
+// it on. This predates OIDC and keeps existing configs working unchanged;
+// OIDC.Enabled composes with it exactly like LDAP.Enabled already does.
 type AuthMode string
 
 const (
@@ -109,6 +115,7 @@ type AuthConfig struct {
 	Mode       AuthMode   `yaml:"mode"`
 	LocalAdmin LocalAdmin `yaml:"local_admin"`
 	LDAP       LDAPConfig `yaml:"ldap"`
+	OIDC       OIDCConfig `yaml:"oidc"`
 }
 
 // LocalAdmin is the break-glass account created during setup.
@@ -150,6 +157,54 @@ type LDAPConfig struct {
 	AllowedGroups []string `yaml:"allowed_groups"`
 
 	Timeout time.Duration `yaml:"timeout"`
+}
+
+// OIDCConfig describes a single-sign-on provider (Dex, Keycloak, Okta, Azure
+// Entra ID, Google, or anything else that speaks standard OpenID Connect
+// discovery). goca is a confidential client: the client secret authenticates
+// it to the provider, so the authorization code flow here does not need PKCE
+// on top of that.
+type OIDCConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// IssuerURL is fetched at <issuer_url>/.well-known/openid-configuration
+	// for the token/authorization endpoints and signing keys - e.g.
+	// https://dex.example.com or https://login.microsoftonline.com/<tenant-id>/v2.0.
+	IssuerURL string `yaml:"issuer_url"`
+	ClientID  string `yaml:"client_id"`
+	// ClientSecret is encrypted with MasterKey (enc: prefix), like the LDAP
+	// bind password.
+	ClientSecret string `yaml:"client_secret"`
+	// RedirectURL defaults to "<server.base_url>/auth/oidc/callback" and must
+	// match what's registered with the provider exactly.
+	RedirectURL string `yaml:"redirect_url"`
+	// Scopes defaults to {openid, profile, email}. "openid" is added
+	// automatically if omitted - every OIDC request requires it.
+	Scopes []string `yaml:"scopes"`
+
+	// InsecureSkipVerify disables certificate verification talking to the
+	// issuer (lab use only, e.g. a self-signed Dex instance).
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+
+	// Claim* name the ID token (or userinfo) claims mapped onto goca's user
+	// model. Defaults match what most providers, including Dex and Entra ID,
+	// emit out of the box.
+	ClaimUsername    string `yaml:"claim_username,omitempty"`     // default preferred_username
+	ClaimDisplayName string `yaml:"claim_display_name,omitempty"` // default name
+	ClaimEmail       string `yaml:"claim_email,omitempty"`        // default email
+	// ClaimGroups names the group-membership claim; blank uses the "groups"
+	// default. There's no separate toggle to disable group-based mapping -
+	// leaving AdminGroups and AllowedGroups both empty already has that
+	// effect (every authenticated user gets the "user" role, nobody is
+	// excluded). Entra ID needs an optional claim configured on the app
+	// registration before it emits a groups claim at all.
+	ClaimGroups string `yaml:"claim_groups,omitempty"` // default groups
+
+	// AdminGroups grants the admin role; AllowedGroups (if non-empty)
+	// restricts login to members of at least one listed group. Matched
+	// case-insensitively against the groups claim's values.
+	AdminGroups   []string `yaml:"admin_groups"`
+	AllowedGroups []string `yaml:"allowed_groups"`
 }
 
 // CAConfig holds issuance defaults.
@@ -349,8 +404,11 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("auth.mode %q must be local, ldap or both", c.Auth.Mode)
 	}
-	if c.Auth.Mode != AuthModeLocal && !c.Auth.LDAP.Enabled {
-		return errors.New("auth.mode requires LDAP but auth.ldap.enabled is false")
+	if c.Auth.Mode != AuthModeLocal && !c.Auth.LDAP.Enabled && !c.Auth.OIDC.Enabled {
+		return errors.New("auth.mode requires LDAP or OIDC, but neither is enabled")
+	}
+	if c.Auth.OIDC.Enabled && c.Auth.OIDC.RedirectURL == "" {
+		c.Auth.OIDC.RedirectURL = strings.TrimRight(c.Server.BaseURL, "/") + "/auth/oidc/callback"
 	}
 	if c.CA.DefaultCertDays <= 0 {
 		c.CA.DefaultCertDays = 397

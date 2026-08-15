@@ -18,6 +18,7 @@ import (
 
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/ldapauth"
+	"github.com/mevijays/goca/internal/oidcauth"
 	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
 )
@@ -37,9 +38,13 @@ type Manager struct {
 	cfg  *config.Config
 	st   *store.Store
 	ldap *ldapauth.Client
+	oidc *oidcauth.Client
 }
 
-// NewManager wires the auth manager, decrypting the LDAP bind password.
+// NewManager wires the auth manager, decrypting the LDAP bind password and
+// OIDC client secret. Building the OIDC client here does not touch the
+// network - see oidcauth.Client's doc comment - so an unreachable issuer
+// cannot break every other CLI command.
 func NewManager(cfg *config.Config, st *store.Store, box *secret.Box) (*Manager, error) {
 	m := &Manager{cfg: cfg, st: st}
 	if cfg.Auth.LDAP.Enabled {
@@ -49,6 +54,13 @@ func NewManager(cfg *config.Config, st *store.Store, box *secret.Box) (*Manager,
 		}
 		m.ldap = ldapauth.New(cfg.Auth.LDAP, pw)
 	}
+	if cfg.Auth.OIDC.Enabled {
+		secretVal, err := box.DecryptString(cfg.Auth.OIDC.ClientSecret)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt OIDC client secret: %w", err)
+		}
+		m.oidc = oidcauth.New(cfg.Auth.OIDC, secretVal)
+	}
 	return m, nil
 }
 
@@ -57,6 +69,12 @@ func (m *Manager) LDAP() *ldapauth.Client { return m.ldap }
 
 // LDAPEnabled reports whether directory login is available.
 func (m *Manager) LDAPEnabled() bool { return m.ldap != nil && m.ldap.Enabled() }
+
+// OIDC exposes the SSO client (nil when OIDC is disabled).
+func (m *Manager) OIDC() *oidcauth.Client { return m.oidc }
+
+// OIDCEnabled reports whether SSO login is available.
+func (m *Manager) OIDCEnabled() bool { return m.oidc != nil && m.oidc.Enabled() }
 
 // LocalEnabled reports whether local password login is available.
 func (m *Manager) LocalEnabled() bool {
@@ -129,35 +147,48 @@ func (m *Manager) Authenticate(ctx context.Context, username, password string) (
 			}
 			return nil, err
 		}
-		role := store.RoleUser
-		if id.IsAdmin {
-			role = store.RoleAdmin
-		}
-		// A user promoted to admin locally keeps that role even if the
-		// directory does not grant it.
-		if existing, err := m.st.GetUserByName(ctx, id.Username); err == nil {
-			if existing.Disabled {
-				return nil, ErrDisabled
-			}
-			if existing.Role == store.RoleAdmin {
-				role = store.RoleAdmin
-			}
-		}
-		u, err := m.st.UpsertUser(ctx, &store.User{
-			Username:    id.Username,
-			Source:      store.SourceLDAP,
-			DisplayName: id.DisplayName,
-			Email:       id.Email,
-			Role:        role,
-		})
-		if err != nil {
-			return nil, err
-		}
-		_ = m.st.TouchLogin(ctx, u.ID)
-		return u, nil
+		return m.syncDirectoryUser(ctx, store.SourceLDAP, id.Username, id.DisplayName, id.Email, id.IsAdmin)
 	}
 
 	return nil, ErrInvalidCredentials
+}
+
+// SyncOIDCUser mirrors a verified OIDC identity into the local user table -
+// the JIT provisioning step for SSO, called once the callback has verified
+// the ID token, before a session is created for the result.
+func (m *Manager) SyncOIDCUser(ctx context.Context, id *oidcauth.Identity) (*store.User, error) {
+	return m.syncDirectoryUser(ctx, store.SourceOIDC, id.Username, id.DisplayName, id.Email, id.IsAdmin)
+}
+
+// syncDirectoryUser mirrors an externally authenticated identity (LDAP or
+// OIDC) into the local user table: created on first sign-in, refreshed on
+// every one after. A user promoted to admin locally keeps that role even if
+// the directory/provider does not grant it.
+func (m *Manager) syncDirectoryUser(ctx context.Context, source, username, displayName, email string, isAdmin bool) (*store.User, error) {
+	role := store.RoleUser
+	if isAdmin {
+		role = store.RoleAdmin
+	}
+	if existing, err := m.st.GetUserByName(ctx, username); err == nil {
+		if existing.Disabled {
+			return nil, ErrDisabled
+		}
+		if existing.Role == store.RoleAdmin {
+			role = store.RoleAdmin
+		}
+	}
+	u, err := m.st.UpsertUser(ctx, &store.User{
+		Username:    username,
+		Source:      source,
+		DisplayName: displayName,
+		Email:       email,
+		Role:        role,
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = m.st.TouchLogin(ctx, u.ID)
+	return u, nil
 }
 
 //

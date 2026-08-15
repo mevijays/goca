@@ -89,6 +89,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("GET /logout", s.handleLogout)
+	// SSO. Unauthenticated at the routing level, same as /login itself: the
+	// state cookie plus the ID token's own signature/nonce are what protect
+	// the callback, not a session.
+	mux.HandleFunc("GET /auth/oidc/login", s.handleOIDCLogin)
+	mux.HandleFunc("GET /auth/oidc/callback", s.handleOIDCCallback)
 
 	page := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.requireUser(h)) }
 	admin := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.requireAdmin(h)) }

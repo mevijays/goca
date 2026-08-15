@@ -24,6 +24,7 @@ const (
 const (
 	SourceLocal = "local"
 	SourceLDAP  = "ldap"
+	SourceOIDC  = "oidc"
 )
 
 // CA statuses beyond the shared ones.

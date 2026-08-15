@@ -30,9 +30,10 @@ this file — what goca is and does, the REST API, and how it's built.
 - **Its own root, or someone else's.** goca can be a self-signed root CA, or run
   as an intermediate underneath a CA you already operate — pfSense, a corporate
   root, an offline root. See [Running under a CA you already have](#running-under-a-ca-you-already-have).
-- **LDAP or local login.** Directory accounts appear on first sign-in and take
-  their role from directory groups. A local break-glass admin always works, even
-  when the directory is down.
+- **Local, LDAP, or SSO login.** Directory and OIDC accounts (Dex, Keycloak,
+  Okta, Azure Entra ID, ...) appear on first sign-in and take their role from
+  directory/provider groups. A local break-glass admin always works, even when
+  the directory or SSO provider is down. See [LDAP and SSO](#ldap-and-sso).
 - **Nothing is lost.** Every certificate ever issued stays searchable and
   re-downloadable — certificate, chain, CSR, and the private key when you asked
   goca to keep it. Private keys are AES-256-GCM encrypted at rest.
@@ -446,16 +447,23 @@ and vice versa — pick whichever fits the automation you're writing.
 
 ---
 
-## LDAP
+## LDAP and SSO
 
-goca supports local password accounts, LDAP/Active Directory, or both at once,
-with a local break-glass admin that always works even when the directory is
-down. Full setup, including every flag: **[SETUP.md — LDAP setup](SETUP.md#ldap-setup)**.
+goca supports local password accounts, LDAP/Active Directory, and OIDC/SSO
+(Dex, Keycloak, Okta, Azure Entra ID, ...), any combination at once, with a
+local break-glass admin that always works even when the directory or SSO
+provider is down. Both map directory/provider groups onto goca's admin/user
+roles the same way. Full setup, including every flag:
+**[SETUP.md — LDAP setup](SETUP.md#ldap-setup)**,
+**[SETUP.md — Single sign-on (OIDC) setup](SETUP.md#single-sign-on-oidc-setup)**.
 
 ```bash
 goca ldap test
 goca ldap login alice          # full login, shows groups and the resulting role
 ```
+
+OIDC has no CLI equivalent to `ldap test`/`ldap login` - verify it by
+actually signing in: open the portal and click **Sign in with SSO**.
 
 ## Roles
 
@@ -473,8 +481,9 @@ The portal refuses to remove or demote the last enabled admin.
 ## Configuration
 
 `goca setup` writes `config.yaml`, and every runtime setting — server address,
-auth mode, certificate defaults, LDAP — lives there. Full schema, discovery
-order, and the master-key backup story: **[SETUP.md — the config file](SETUP.md#the-config-file)**.
+auth mode, certificate defaults, LDAP, OIDC — lives there. Full schema,
+discovery order, and the master-key backup story:
+**[SETUP.md — the config file](SETUP.md#the-config-file)**.
 
 ## Trusting the CA on clients
 

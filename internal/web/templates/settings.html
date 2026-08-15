@@ -204,6 +204,27 @@
   </div>
 
   <div class="card">
+    <h2>Single sign-on (OIDC)</h2>
+    {{if $d.OIDC.Enabled}}
+    <dl class="dl">
+      <dt>Issuer</dt><dd class="mono">{{$d.OIDC.IssuerURL}}</dd>
+      <dt>Client ID</dt><dd class="mono">{{$d.OIDC.ClientID}}</dd>
+      <dt>Redirect URL</dt><dd class="mono">{{$d.OIDC.RedirectURL}}</dd>
+      <dt>Scopes</dt><dd class="mono">{{join $d.OIDC.Scopes ", "}}</dd>
+      <dt>Verify certificate</dt>
+      <dd>{{if $d.OIDC.InsecureSkipVerify}}<span class="badge danger">disabled</span>{{else}}enabled{{end}}</dd>
+      <dt>Groups claim</dt><dd class="mono">{{if $d.OIDC.ClaimGroups}}{{$d.OIDC.ClaimGroups}}{{else}}<span class="dim">groups (default)</span>{{end}}</dd>
+      <dt>Admin groups</dt><dd class="mono">{{if $d.OIDC.AdminGroups}}{{join $d.OIDC.AdminGroups ", "}}{{else}}<span class="dim">none</span>{{end}}</dd>
+      <dt>Allowed groups</dt>
+      <dd class="mono">{{if $d.OIDC.AllowedGroups}}{{join $d.OIDC.AllowedGroups ", "}}{{else}}<span class="dim">any authenticated user</span>{{end}}</dd>
+    </dl>
+    {{else}}
+    <p class="dim">OIDC is disabled. Enable it by re-running
+      <span class="mono">goca setup</span> or editing the config file.</p>
+    {{end}}
+  </div>
+
+  <div class="card">
     <h2>Server</h2>
     <dl class="dl">
       <dt>Config file</dt><dd class="mono">{{$d.ConfigPath}}</dd>

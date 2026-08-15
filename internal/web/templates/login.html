@@ -10,13 +10,21 @@
   <div class="flash error">{{.Data.Error}}</div>
   {{end}}
 
+  {{if .Data.OIDC}}
+  <a class="btn" href="{{.Data.OIDCLoginURL}}" style="width:100%;text-align:center;display:block;box-sizing:border-box">
+    Sign in with SSO
+  </a>
+  {{end}}
+
+  {{if or .Data.Local .Data.LDAP}}
+  {{if .Data.OIDC}}<p class="hint" style="text-align:center;margin:16px 0">or</p>{{end}}
   <form method="post" action="/login">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <input type="hidden" name="next" value="{{.Data.Next}}">
     <div class="field">
       <label for="username">Username</label>
       <input type="text" id="username" name="username" autocomplete="username"
-             autocapitalize="none" spellcheck="false" required autofocus>
+             autocapitalize="none" spellcheck="false" required {{if not .Data.OIDC}}autofocus{{end}}>
     </div>
     <div class="field">
       <label for="password">Password</label>
@@ -24,9 +32,14 @@
     </div>
     <button class="btn" type="submit" style="width:100%">Sign in</button>
   </form>
+  {{end}}
 
   <p class="hint" style="text-align:center;margin-top:16px">
-    {{if and .Data.LDAP .Data.Local}}
+    {{if and .Data.OIDC (or .Data.Local .Data.LDAP)}}
+      Sign in with SSO, your directory account, or the local administrator account.
+    {{else if .Data.OIDC}}
+      Sign in with your organization's single sign-on.
+    {{else if and .Data.LDAP .Data.Local}}
       Sign in with your directory account, or the local administrator account.
     {{else if .Data.LDAP}}
       Sign in with your directory (LDAP) account.

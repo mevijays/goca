@@ -53,6 +53,20 @@ type setupFlags struct {
 	ldapAdminG   []string
 	ldapAllowG   []string
 
+	oidcEnabled      bool
+	oidcIssuerURL    string
+	oidcClientID     string
+	oidcClientSecret string
+	oidcRedirectURL  string
+	oidcScopes       []string
+	oidcInsecure     bool
+	oidcClaimUser    string
+	oidcClaimName    string
+	oidcClaimEmail   string
+	oidcClaimGroups  string
+	oidcAdminG       []string
+	oidcAllowG       []string
+
 	certDays   int
 	caDays     int
 	crlDays    int
@@ -79,7 +93,8 @@ Creates everything goca needs to run:
   * a session signing key
   * the database and its schema - SQLite by default, or PostgreSQL when asked for
   * a local administrator account (the break-glass login, always available
-    even when the directory server is down)
+    even when the directory server or SSO provider is down)
+  * optionally, LDAP and/or OIDC/SSO (Dex, Keycloak, Okta, Azure Entra ID, ...)
   * optionally, your first certificate authority
 
 Run it interactively for a guided wizard, or pass --non-interactive with flags
@@ -106,7 +121,15 @@ for unattended installs.`),
       --ldap-base-dn 'ou=people,dc=example,dc=com' \
       --ldap-user-filter '(&(objectClass=person)(uid=%s))' \
       --ldap-group-base-dn 'ou=groups,dc=example,dc=com' \
-      --ldap-admin-group 'cn=ca-admins,ou=groups,dc=example,dc=com'`),
+      --ldap-admin-group 'cn=ca-admins,ou=groups,dc=example,dc=com'
+
+  # Unattended with OIDC/SSO (Dex, Keycloak, Okta, Azure Entra ID, ...)
+  goca setup --non-interactive \
+      --admin-user admin --admin-password 'S3cret!!' \
+      --base-url https://ca.example.com \
+      --oidc --oidc-issuer-url https://dex.example.com \
+      --oidc-client-id goca --oidc-client-secret 'S3cret!!' \
+      --oidc-admin-group ca-admins`),
 		RunE: func(cmd *cobra.Command, _ []string) error { return runSetup(cmd.Context(), f) },
 	}
 
@@ -116,7 +139,7 @@ for unattended installs.`),
 	fl.StringVar(&f.listen, "listen", "0.0.0.0", "address the web portal binds to")
 	fl.IntVar(&f.port, "port", 8080, "port the web portal listens on")
 	fl.StringVar(&f.baseURL, "base-url", "", "external URL of the portal (used in CRL/OCSP URLs)")
-	fl.StringVar(&f.authMode, "auth-mode", "", "local, ldap or both")
+	fl.StringVar(&f.authMode, "auth-mode", "", "local, ldap or both - only governs local/LDAP; OIDC is toggled separately with --oidc")
 	fl.StringVar(&f.adminUser, "admin-user", "admin", "local administrator username")
 	fl.StringVar(&f.adminPass, "admin-password", "", "local administrator password (generated when omitted)")
 	fl.BoolVar(&f.nonInteractive, "non-interactive", false, "never prompt; use flags and defaults")
@@ -144,6 +167,20 @@ for unattended installs.`),
 	fl.StringVar(&f.ldapGroupF, "ldap-group-filter", "(&(objectClass=groupOfNames)(member=%s))", "group filter, %s = user DN")
 	fl.StringSliceVar(&f.ldapAdminG, "ldap-admin-group", nil, "group whose members get the admin role (repeatable)")
 	fl.StringSliceVar(&f.ldapAllowG, "ldap-allowed-group", nil, "restrict login to these groups (repeatable)")
+
+	fl.BoolVar(&f.oidcEnabled, "oidc", false, "enable OIDC/SSO authentication (Dex, Keycloak, Okta, Azure Entra ID, ...)")
+	fl.StringVar(&f.oidcIssuerURL, "oidc-issuer-url", "", "the provider's issuer URL (OIDC discovery is fetched from <url>/.well-known/openid-configuration)")
+	fl.StringVar(&f.oidcClientID, "oidc-client-id", "", "OAuth2 client ID registered with the provider")
+	fl.StringVar(&f.oidcClientSecret, "oidc-client-secret", "", "OAuth2 client secret (encrypted in the config)")
+	fl.StringVar(&f.oidcRedirectURL, "oidc-redirect-url", "", "callback URL registered with the provider (default: <base-url>/auth/oidc/callback)")
+	fl.StringSliceVar(&f.oidcScopes, "oidc-scope", nil, "OAuth2 scopes to request (default: openid, profile, email)")
+	fl.BoolVar(&f.oidcInsecure, "oidc-insecure", false, "skip TLS certificate verification talking to the issuer (lab use only)")
+	fl.StringVar(&f.oidcClaimUser, "oidc-claim-username", "", "ID token claim for the username (default: preferred_username)")
+	fl.StringVar(&f.oidcClaimName, "oidc-claim-display-name", "", "ID token claim for the display name (default: name)")
+	fl.StringVar(&f.oidcClaimEmail, "oidc-claim-email", "", "ID token claim for the email address (default: email)")
+	fl.StringVar(&f.oidcClaimGroups, "oidc-claim-groups", "", "ID token claim for group membership (default: groups)")
+	fl.StringSliceVar(&f.oidcAdminG, "oidc-admin-group", nil, "group whose members get the admin role (repeatable)")
+	fl.StringSliceVar(&f.oidcAllowG, "oidc-allowed-group", nil, "restrict login to these groups (repeatable)")
 
 	fl.IntVar(&f.certDays, "default-cert-days", 397, "default validity for issued certificates")
 	fl.IntVar(&f.caDays, "default-ca-days", 3650, "default validity for new authorities")
@@ -380,6 +417,73 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 		l.BindPassword = bindPass
 	}
 
+	wantOIDC := f.oidcEnabled
+	if guided {
+		fmt.Println()
+		wantOIDC = askYesNo("Enable OIDC / single sign-on (Dex, Keycloak, Okta, Azure Entra ID, ...)?", wantOIDC)
+	}
+	if wantOIDC {
+		o := &cfg.Auth.OIDC
+		o.Enabled = true
+		o.IssuerURL = f.oidcIssuerURL
+		o.ClientID = f.oidcClientID
+		o.RedirectURL = f.oidcRedirectURL
+		o.Scopes = f.oidcScopes
+		o.InsecureSkipVerify = f.oidcInsecure
+		o.ClaimUsername = f.oidcClaimUser
+		o.ClaimDisplayName = f.oidcClaimName
+		o.ClaimEmail = f.oidcClaimEmail
+		o.ClaimGroups = f.oidcClaimGroups
+		o.AdminGroups = f.oidcAdminG
+		o.AllowedGroups = f.oidcAllowG
+		clientSecret := f.oidcClientSecret
+
+		if guided {
+			fmt.Println()
+			o.IssuerURL = askRequired(
+				"  Issuer URL (e.g. https://dex.example.com, or https://login.microsoftonline.com/<tenant-id>/v2.0)",
+				o.IssuerURL)
+			o.ClientID = askRequired("  Client ID", o.ClientID)
+			pw, err := askPassword("  Client secret", false)
+			if err != nil {
+				return err
+			}
+			if pw != "" {
+				clientSecret = pw
+			}
+			defaultRedirect := firstNonEmpty(o.RedirectURL, strings.TrimRight(cfg.Server.BaseURL, "/")+"/auth/oidc/callback")
+			o.RedirectURL = ask("  Redirect URL (must be registered with the provider exactly)", defaultRedirect)
+			if s := ask("  Scopes (space separated)", firstNonEmpty(strings.Join(o.Scopes, " "), "openid profile email")); s != "" {
+				o.Scopes = strings.Fields(s)
+			}
+			o.InsecureSkipVerify = askYesNo("  Skip TLS certificate verification talking to the issuer (lab use only)?", o.InsecureSkipVerify)
+			o.ClaimUsername = ask("  Username claim", firstNonEmpty(o.ClaimUsername, "preferred_username"))
+			o.ClaimDisplayName = ask("  Display name claim", firstNonEmpty(o.ClaimDisplayName, "name"))
+			o.ClaimEmail = ask("  Email claim", firstNonEmpty(o.ClaimEmail, "email"))
+			o.ClaimGroups = ask("  Groups claim", firstNonEmpty(o.ClaimGroups, "groups"))
+			if g := ask("  Admin group name or ID (comma separated, blank for none)",
+				strings.Join(o.AdminGroups, ",")); g != "" {
+				o.AdminGroups = splitCSV(g)
+			}
+			if g := ask("  Restrict login to these groups (comma separated, blank = any authenticated user)",
+				strings.Join(o.AllowedGroups, ",")); g != "" {
+				o.AllowedGroups = splitCSV(g)
+			}
+		}
+		if o.IssuerURL == "" {
+			return errors.New("--oidc-issuer-url is required when OIDC is enabled")
+		}
+		if o.ClientID == "" {
+			return errors.New("--oidc-client-id is required when OIDC is enabled")
+		}
+		if o.RedirectURL == "" {
+			o.RedirectURL = strings.TrimRight(cfg.Server.BaseURL, "/") + "/auth/oidc/callback"
+		}
+		// Stashed until the master key exists; encrypted just below.
+		o.ClientSecret = clientSecret
+		kv("OIDC issuer", o.IssuerURL)
+	}
+
 	// ---- local administrator ----
 	adminUser := f.adminUser
 	adminPass := f.adminPass
@@ -472,6 +576,21 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 		}
 		cfg.Database.Password = enc
 	}
+	if cfg.Auth.OIDC.Enabled && cfg.Auth.OIDC.ClientSecret != "" {
+		key, err := cfg.MasterKeyBytes()
+		if err != nil {
+			return err
+		}
+		box, err := secret.NewBox(key)
+		if err != nil {
+			return err
+		}
+		enc, err := box.EncryptString(cfg.Auth.OIDC.ClientSecret)
+		if err != nil {
+			return err
+		}
+		cfg.Auth.OIDC.ClientSecret = enc
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -562,6 +681,9 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 	kv("config", outPath)
 	kv("database", cfg.DatabaseSummary())
 	kv("admin user", adminUser)
+	if cfg.Auth.OIDC.Enabled {
+		kv("OIDC issuer", cfg.Auth.OIDC.IssuerURL)
+	}
 	if generated {
 		fmt.Println()
 		fmt.Printf("  \033[1mGenerated administrator password: %s\033[0m\n", adminPass)

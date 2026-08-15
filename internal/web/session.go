@@ -121,14 +121,23 @@ func (s *Server) csrfToken(w http.ResponseWriter, r *http.Request) string {
 	if c, err := r.Cookie(csrfCookie); err == nil && len(c.Value) >= 16 {
 		return c.Value
 	}
-	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
+	tok, err := randomURLSafeToken(24)
+	if err != nil {
 		return ""
 	}
-	tok := base64.RawURLEncoding.EncodeToString(b)
 	// Readable by JS so the portal's fetch() calls can echo it back.
 	s.setCookie(w, r, csrfCookie, tok, 12*3600, false)
 	return tok
+}
+
+// randomURLSafeToken returns n random bytes, base64url-encoded. Used for
+// CSRF tokens and the OIDC login flow's state/nonce values.
+func randomURLSafeToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func (s *Server) checkCSRF(r *http.Request) bool {
@@ -216,6 +225,14 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.finishLogin(w, r, u, next)
+}
+
+// finishLogin creates a session for an already-authenticated user, sets the
+// session and CSRF cookies, audits the sign-in, and redirects to next (or /
+// when next is empty or not a safe same-site path). Shared by local login
+// and the OIDC callback.
+func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, u *store.User, next string) {
 	token, _, err := s.auth.CreateSession(r.Context(), u, clientIP(r), r.UserAgent())
 	if err != nil {
 		s.renderLogin(w, r, "Could not start a session: "+err.Error(), next)
