@@ -9,43 +9,58 @@
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 </head>
 <body>
-{{if .User}}
+{{/* The topbar (and with it the with-nav layout below) shows whenever there's
+     a real page to navigate from - an authenticated session, or a page like
+     the SSL utility that works without one and still sets .Nav. Only the
+     login/error shells (neither) get the plain, chrome-free layout. This
+     keeps a signed-out visitor's page looking like everyone else's, just
+     with the nav links that need an account left out and a "Sign in" in
+     place of the user box. */}}
+{{if or .User .Nav}}
 <header class="topbar">
   <a class="brand" href="/">
     <span class="brand-mark">CA</span>
     <span class="brand-text">goca</span>
   </a>
   <nav class="mainnav">
+    {{if .User}}
     <a href="/" class="{{if eq .Nav "dashboard"}}active{{end}}">Dashboard</a>
     <a href="/cas" class="{{if eq .Nav "cas"}}active{{end}}">Authorities</a>
     <a href="/certificates" class="{{if eq .Nav "certs"}}active{{end}}">Certificates</a>
     <a href="/certificates/new" class="{{if eq .Nav "request"}}active{{end}}">Request</a>
     <a href="/tools/csr" class="{{if eq .Nav "csr"}}active{{end}}">CSR tool</a>
+    {{end}}
     <a href="/tools/ssl" class="{{if eq .Nav "ssl"}}active{{end}}">SSL utility</a>
+    {{if .User}}
     {{if .User.IsAdmin}}<a href="/settings/acme" class="{{if eq .Nav "acme"}}active{{end}}">ACME</a>{{end}}
     {{if .User.IsAdmin}}<a href="/audit" class="{{if eq .Nav "audit"}}active{{end}}">Audit</a>{{end}}
     {{if .User.IsAdmin}}<a href="/settings/api-docs" class="{{if eq .Nav "api-docs"}}active{{end}}">API</a>{{end}}
     <a href="/settings" class="{{if eq .Nav "settings"}}active{{end}}">Settings</a>
+    {{end}}
   </nav>
   <div class="userbox">
+    {{if .User}}
     <span class="user-name" title="{{.User.Source}} account">{{.User.Username}}</span>
     {{if .User.IsAdmin}}<span class="badge admin">admin</span>{{end}}
     <form method="post" action="/logout" class="inline">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <button class="linkbtn" type="submit">Sign out</button>
     </form>
+    {{else}}
+    <a class="btn small" href="/login">Sign in</a>
+    {{end}}
   </div>
 </header>
 {{end}}
 
-<main class="{{if .User}}with-nav{{else}}plain{{end}}">
+<main class="{{if or .User .Nav}}with-nav{{else}}plain{{end}}">
   {{if .Flash}}
   <div class="flash {{.Flash.Kind}}" role="status">{{.Flash.Text}}</div>
   {{end}}
   {{template "content" .}}
 </main>
 
-{{if .User}}
+{{if or .User .Nav}}
 <footer class="footer">
   <span>goca {{.Version}}</span>
   <span class="sep">·</span>

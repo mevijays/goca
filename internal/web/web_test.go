@@ -618,6 +618,39 @@ func TestSSLUtilityIsAnonymous(t *testing.T) {
 	}
 }
 
+// TestSSLUtilityAnonymousLayoutMatchesLoggedIn guards against the page
+// looking different for a signed-out visitor - it should get the same
+// topbar/nav shell as a logged-in user, just without the links and user box
+// that need an account, plus a Sign in link in their place.
+func TestSSLUtilityAnonymousLayoutMatchesLoggedIn(t *testing.T) {
+	h := newHarness(t)
+	anon := h.get("/tools/ssl", nil).Body.String()
+
+	for _, want := range []string{
+		`<header class="topbar">`, `class="brand"`, `class="mainnav"`,
+		`SSL utility</a>`, `class="active"`, `href="/login">Sign in</a>`,
+		`class="with-nav"`, `class="footer"`,
+	} {
+		if !strings.Contains(anon, want) {
+			t.Errorf("anonymous /tools/ssl is missing %q - layout differs from a logged-in page", want)
+		}
+	}
+	// Links that need an account should not appear for an anonymous visitor.
+	for _, dontWant := range []string{`>Dashboard<`, `>Authorities<`, `>Certificates<`, `>Settings<`, `class="plain"`} {
+		if strings.Contains(anon, dontWant) {
+			t.Errorf("anonymous /tools/ssl unexpectedly contains %q", dontWant)
+		}
+	}
+
+	cookies, _ := h.session()
+	loggedIn := h.get("/tools/ssl", cookies).Body.String()
+	for _, want := range []string{`<header class="topbar">`, `class="with-nav"`, `SSL utility</a>`} {
+		if !strings.Contains(loggedIn, want) {
+			t.Errorf("logged-in /tools/ssl is missing %q", want)
+		}
+	}
+}
+
 func TestSSLUtilityKeyMatchesItsCertificate(t *testing.T) {
 	h := newHarness(t)
 	certPEM, keyPEM := selfSignedTestCert(t, "match.test")
