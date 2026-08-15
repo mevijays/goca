@@ -45,7 +45,8 @@ this file — what goca is and does, the REST API, and how it's built.
 - **ACME for private domains.** An RFC 8555 server, External Account Binding
   only — no HTTP-01/DNS-01 challenge is ever validated, which is what makes it
   usable for internal zones cert-manager and friends could never prove
-  ownership of publicly. See [ACME-EAB.md](ACME-EAB.md).
+  ownership of publicly. See [ACME-EAB.md](ACME-EAB.md), or
+  [k8s-demo/](k8s-demo/README.md) for a runnable cert-manager walkthrough.
 
 ## Quick start
 

@@ -22,7 +22,10 @@ matches how you already trust the cluster: it's on your network, and it holds
 a secret you gave it.
 
 Setup and CLI basics live in [SETUP.md](SETUP.md) and [USAGE.md](USAGE.md).
-This document is the complete story for the ACME side.
+This document is the complete story for the ACME side. Want a runnable
+copy-paste version instead of reading first? See
+**[k8s-demo/](k8s-demo/README.md)** — cert-manager install, the exact
+`ClusterIssuer`/`Certificate` YAML, applied in order.
 
 ## Contents
 

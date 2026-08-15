@@ -1,0 +1,37 @@
+# ClusterIssuer for goca's ACME (EAB-only) endpoint.
+#
+# There is no HTTP-01/DNS-01 solver here on purpose - the External Account
+# Binding key you created with `goca acme eab create` *is* the trust
+# decision. Every authorization goca hands back already comes "valid", so
+# cert-manager never needs to prove domain ownership; `solvers: []` is
+# correct as written, not a placeholder for something you still have to add.
+#
+# Before applying:
+#   1. Create the EAB credential in goca and copy its printed keyID:
+#        goca acme eab create k8s-demo \
+#            --allowed-domain '*.svc.k8s-demo.internal' --max-accounts 1
+#   2. Put the HMAC key it prints into a Secret (never commit the key itself
+#      to a file - this is why it's a `kubectl create secret` command in
+#      README.md, not a checked-in secret.yaml):
+#        kubectl create secret generic goca-eab \
+#            --namespace cert-manager \
+#            --from-literal=hmac-key='<the HMAC key goca printed>'
+#   3. Replace CA_BASE_URL and EAB_KEY_ID below with your own values.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: goca
+spec:
+  acme:
+    # e.g. https://ca.example.com/acme/directory
+    server: https://CA_BASE_URL/acme/directory
+    # cert-manager generates and stores its own ACME account key here on
+    # first use - this is not the EAB secret above, you don't create it.
+    privateKeySecretRef:
+      name: goca-acme-account-key
+    externalAccountBinding:
+      keyID: EAB_KEY_ID
+      keySecretRef:
+        name: goca-eab
+        key: hmac-key
+    solvers: []

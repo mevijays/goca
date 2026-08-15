@@ -1,0 +1,22 @@
+# Requests a certificate through the goca ClusterIssuer (cluster-issuer.yaml).
+# cert-manager creates an Order, goca signs it immediately - every
+# authorization is already "valid" under EAB, so there's no challenge
+# round trip to wait out. The cert typically lands in the Secret within a
+# few seconds of applying this.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: app-tls
+  namespace: default
+spec:
+  secretName: app-tls
+  # 90 days; cert-manager renews automatically well before this expires.
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: goca
+    kind: ClusterIssuer
+  dnsNames:
+    # Must match (or fall under) the EAB credential's --allowed-domain
+    # patterns, or goca rejects the order with "rejectedIdentifier".
+    - app.svc.k8s-demo.internal
