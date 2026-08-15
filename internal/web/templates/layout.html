@@ -23,6 +23,7 @@
     <a href="/tools/csr" class="{{if eq .Nav "csr"}}active{{end}}">CSR tool</a>
     {{if .User.IsAdmin}}<a href="/settings/acme" class="{{if eq .Nav "acme"}}active{{end}}">ACME</a>{{end}}
     {{if .User.IsAdmin}}<a href="/audit" class="{{if eq .Nav "audit"}}active{{end}}">Audit</a>{{end}}
+    {{if .User.IsAdmin}}<a href="/settings/api-docs" class="{{if eq .Nav "api-docs"}}active{{end}}">API</a>{{end}}
     <a href="/settings" class="{{if eq .Nav "settings"}}active{{end}}">Settings</a>
   </nav>
   <div class="userbox">

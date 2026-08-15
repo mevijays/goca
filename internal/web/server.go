@@ -139,6 +139,9 @@ func (s *Server) Handler() http.Handler {
 	admin("POST /settings/acme/eab/{id}/disable", s.handleACMEEABDisable)
 	admin("POST /settings/acme/eab/{id}/delete", s.handleACMEEABDelete)
 
+	admin("GET /settings/api-docs", s.handleAPIDocsPage)
+	admin("GET /settings/api-docs/openapi.yaml", s.handleOpenAPISpec)
+
 	// ---- REST API ----
 	api := func(pattern string, h apiHandler) { mux.Handle(pattern, s.apiAuth(h, false)) }
 	apiAdmin := func(pattern string, h apiHandler) { mux.Handle(pattern, s.apiAuth(h, true)) }

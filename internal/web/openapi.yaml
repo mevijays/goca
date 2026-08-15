@@ -1,0 +1,1336 @@
+openapi: 3.0.3
+info:
+  title: goca API
+  version: "1.0"
+  description: |
+    The REST API of **goca**, a self-hosted certificate authority. Every
+    capability here also exists in the CLI and the web portal — all three
+    call the same service layer, so nothing in this spec is API-only.
+
+    ## Authentication
+
+    Every endpoint under `/api/v1` (except `/api/v1/health`) accepts either:
+
+    - **A bearer token** — `Authorization: Bearer goca_xxxxxxxx_...`, created
+      with `goca token create` or `POST /api/v1/tokens`. This is the normal
+      way to call the API from scripts and automation.
+    - **A portal session cookie** — if you're already signed in to the portal
+      in this browser, "Try it out" below works using that session. Session-
+      authenticated `POST`/`PATCH`/`DELETE` calls also require a CSRF token,
+      which this docs page is not set up to supply — use a bearer token for
+      anything beyond `GET` requests here.
+
+    Endpoints marked 🔒 **admin** require the caller's role (bearer token or
+    session) to be `admin`; a `user`-role token gets a 403 from those.
+
+    ## Downloads
+
+    The `.../download/{file}` endpoints return raw file bytes (PEM, DER,
+    a PKCS#12 or ZIP archive), not JSON — their `Content-Type` varies by the
+    `file` requested. They're documented here for completeness but a browser
+    "Try it out" will just show the response inline.
+
+    ## ACME itself
+
+    The ACME (RFC 8555) protocol endpoints under `/acme/*` are a separate,
+    self-authenticating protocol (JWS/EAB, not bearer tokens) and are not
+    part of this spec — see [ACME-EAB.md](/settings/acme) and the `/acme/eab`
+    endpoints below, which manage *access* to that protocol rather than
+    speaking it.
+  license:
+    name: MIT
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+  - sessionAuth: []
+
+tags:
+  - name: General
+  - name: Certificate Authorities
+  - name: External CA integration
+    description: Running goca underneath a CA you already operate (pfSense, a corporate root, an offline root).
+  - name: Certificates
+  - name: Certificate lifecycle
+    description: Renewal/rotation, holds, and bulk revocation.
+  - name: CSR & inspection
+  - name: API tokens
+  - name: Users
+    description: 🔒 admin
+  - name: Audit
+    description: 🔒 admin
+  - name: ACME access
+    description: 🔒 admin — manage EAB credentials and see who has registered. The ACME protocol itself is unauthenticated at /acme/*.
+
+paths:
+  /health:
+    get:
+      tags: [General]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  cas: { type: integer }
+                  version: { type: string }
+                  setup: { type: boolean, description: "true once at least one CA exists" }
+
+  /me:
+    get:
+      tags: [General]
+      summary: The caller's own identity
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/User" } }
+
+  /stats:
+    get:
+      tags: [General]
+      summary: Dashboard counters
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/Stats" } }
+
+  #################### Certificate Authorities ####################
+
+  /cas:
+    get:
+      tags: [Certificate Authorities]
+      summary: List authorities
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  cas:
+                    type: array
+                    items: { $ref: "#/components/schemas/CAWithPEM" }
+    post:
+      tags: [Certificate Authorities]
+      summary: Create a root or intermediate authority
+      description: 🔒 admin. Without `parent`, a self-signed root; with it, signed by an existing goca-held authority.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CreateCAInput" } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/CAWithPEM" } }
+
+  /cas/{id}:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    get:
+      tags: [Certificate Authorities]
+      summary: Get one authority
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/CAWithPEM" } }
+    delete:
+      tags: [Certificate Authorities]
+      summary: Delete an authority and every certificate it issued
+      description: 🔒 admin. Irreversible. To retire an authority while keeping its history, use `/cas/{id}/revoke` instead.
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /cas/{id}/default:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    post:
+      tags: [Certificate Authorities]
+      summary: Make this the default issuing authority
+      description: 🔒 admin
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /cas/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    post:
+      tags: [Certificate Authorities]
+      summary: Enable or disable issuance from an authority
+      description: 🔒 admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [active, disabled] }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /cas/{id}/crl:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    post:
+      tags: [Certificate Authorities]
+      summary: Generate a fresh CRL now
+      description: 🔒 admin. The authority must hold its own private key (not a trust anchor).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  crl_pem: { type: string }
+
+  /cas/{id}/download/{file}:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+      - name: file
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [ca.crt, ca.pem, ca.der, ca.key, chain.pem, crl.pem, crl.crl, request.csr, bundle.zip]
+        description: "`ca.key` requires the admin role."
+    get:
+      tags: [Certificate Authorities]
+      summary: Download a CA artefact
+      responses:
+        "200":
+          description: The raw file (PEM, DER, or a ZIP bundle) — Content-Type varies by `file`.
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+
+  /cas/request:
+    post:
+      tags: [External CA integration]
+      summary: Generate a subordinate CA key and CSR for an external authority to sign
+      description: |
+        🔒 admin. goca generates the key pair and keeps it encrypted; only the
+        CSR leaves this server. Creates the authority in `pending` state -
+        complete it with `POST /cas/{id}/import-signed` once you have the
+        signed certificate back.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/SubordinateCSRInput" } }
+      responses:
+        "201":
+          description: Created (pending)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ca: { $ref: "#/components/schemas/CA" }
+                  csr_pem: { type: string }
+                  info: { type: object, description: "CSR summary (subject, SANs, key type)." }
+
+  /cas/import:
+    post:
+      tags: [External CA integration]
+      summary: Import an existing CA, with or without its private key
+      description: |
+        🔒 admin. With `key_pem`, goca can issue from it immediately. Without
+        one, it's stored as a read-only trust anchor: it completes chains and
+        is downloadable, but cannot sign anything.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/ImportCAInput" } }
+      responses:
+        "201":
+          description: Imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ca: { $ref: "#/components/schemas/CAWithPEM" }
+                  can_issue: { type: boolean }
+                  chain_complete: { type: boolean, description: "false if the issuer above it is not yet known to goca" }
+
+  /cas/pending:
+    get:
+      tags: [External CA integration]
+      summary: List subordinate CAs awaiting an external signature
+      description: 🔒 admin
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  pending:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ca: { $ref: "#/components/schemas/CA" }
+                        csr_pem: { type: string }
+
+  /cas/{id}/csr:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    get:
+      tags: [External CA integration]
+      summary: Fetch the stored request of a pending authority
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  csr_pem: { type: string }
+
+  /cas/{id}/import-signed:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    post:
+      tags: [External CA integration]
+      summary: Complete a pending authority with the externally signed certificate
+      description: |
+        🔒 admin. Checked against the private key goca kept for this request -
+        a certificate issued for a different request is rejected. `chain_pem`
+        is optional; anything in it not already known to goca is imported as
+        a trust anchor.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CompleteSubordinateInput" } }
+      responses:
+        "200":
+          description: Activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ca: { $ref: "#/components/schemas/CAWithPEM" }
+                  chain_complete: { type: boolean }
+
+  /cas/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/caRef"
+    post:
+      tags: [Certificate Authorities]
+      summary: Retire an authority
+      description: |
+        🔒 admin. Disables issuance immediately. With `cascade`, every
+        certificate it issued (and any subordinate authorities beneath it) is
+        revoked too. When goca holds this authority's issuer, its certificate
+        is also added to that issuer's CRL.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  oneOf: [{ type: string }, { type: integer }]
+                  description: RFC 5280 reason, by name or code (default `cessationOfOperation`).
+                cascade: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ca: { $ref: "#/components/schemas/CA" }
+                  revoked_in_parent: { type: boolean }
+                  parent_name: { type: string }
+                  certificates_revoked: { type: integer }
+                  child_cas: { type: array, items: { type: string } }
+                  warnings: { type: array, items: { type: string } }
+
+  #################### Certificates ####################
+
+  /certificates:
+    get:
+      tags: [Certificates]
+      summary: Search certificates
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Free-text match on common name, subject, SANs, serial, fingerprint or requester.
+        - name: ca
+          in: query
+          schema: { type: integer }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, expired, revoked] }
+        - name: profile
+          in: query
+          schema: { type: string }
+        - name: requested_by
+          in: query
+          schema: { type: string }
+          description: 🔒 admin-only filter — non-admin callers are always scoped to their own certificates.
+        - name: expiring
+          in: query
+          schema: { type: integer }
+          description: Only certificates expiring within N days.
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [created_at, not_after, common_name], default: created_at }
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+                  certificates:
+                    type: array
+                    items: { $ref: "#/components/schemas/CertificateWithPEM" }
+    post:
+      tags: [Certificates]
+      summary: Issue a certificate
+      description: |
+        Either generate a key and CSR server-side (`mode: generate`, the
+        default when `subject` is set) or sign a CSR you already have
+        (`mode: csr`, the default when `csr_pem` is set). A generated key is
+        stored encrypted unless `store_key: false` — in which case it is
+        returned once, in the response, and never again.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/IssueInput" } }
+      responses:
+        "201":
+          description: Issued
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/IssueResult" } }
+
+  /certificates/{id}:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+    get:
+      tags: [Certificates]
+      summary: Get one certificate, by id or serial
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/CertificateWithPEM" } }
+    delete:
+      tags: [Certificates]
+      summary: Delete the certificate record (not a revocation)
+      description: |
+        🔒 admin. Removes the record and any stored key. This does **not**
+        revoke it — a deleted certificate can no longer appear on a CRL.
+        Revoke first unless you're cleaning up a mistake.
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /certificates/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+    post:
+      tags: [Certificates]
+      summary: Revoke a certificate
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  oneOf: [{ type: string }, { type: integer }]
+                  description: RFC 5280 reason, by name or code (default `unspecified`).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [revoked] }
+                  reason: { type: string }
+                  reason_code: { type: integer }
+
+  /certificates/{id}/download/{file}:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+      - name: file
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [cert.pem, cert.crt, cert.der, key.pem, chain.pem, fullchain.pem, request.csr, bundle.p12, bundle.zip]
+      - name: password
+        in: query
+        schema: { type: string }
+        description: Only used by `bundle.p12`.
+    get:
+      tags: [Certificates]
+      summary: Download a certificate artefact
+      responses:
+        "200":
+          description: The raw file (PEM, DER, PKCS#12, or a ZIP bundle) — Content-Type varies by `file`.
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+
+  #################### Certificate lifecycle ####################
+
+  /certificates/{id}/renew:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+    post:
+      tags: [Certificate lifecycle]
+      summary: Renew/rotate a certificate
+      description: |
+        Issues a replacement with the same subject, SANs and profile. A new
+        key is generated by default; set `same_key: true` to reuse the
+        existing one instead (only when it's pinned somewhere - a fresh key
+        is what actually retires a potentially compromised one). The
+        predecessor stays valid unless `revoke_old: true`.
+      requestBody:
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/RenewInput" } }
+      responses:
+        "201":
+          description: Renewed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  certificate: { $ref: "#/components/schemas/CertificateWithPEM" }
+                  previous:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      serial: { type: string }
+                  private_key_pem: { type: string }
+                  chain_pem: { type: string }
+                  revoked_old: { type: boolean }
+                  key_stored: { type: boolean }
+
+  /certificates/{id}/history:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+    get:
+      tags: [Certificate lifecycle]
+      summary: Walk the renewal chain a certificate belongs to
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current_id: { type: integer }
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/Certificate" }
+
+  /certificates/{id}/hold:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+    post:
+      tags: [Certificate lifecycle]
+      summary: Suspend a certificate reversibly (certificateHold)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [on_hold] }
+                  reversible: { type: boolean }
+                  serial: { type: string }
+
+  /certificates/{id}/release:
+    parameters:
+      - $ref: "#/components/parameters/certRef"
+    post:
+      tags: [Certificate lifecycle]
+      summary: Lift a hold
+      description: Only a certificate currently on hold can be released; every other revocation reason is permanent.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [active] }
+                  serial: { type: string }
+
+  /certificates/renew-expiring:
+    post:
+      tags: [Certificate lifecycle]
+      summary: Renew every certificate expiring soon
+      description: 🔒 admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                within_days: { type: integer, default: 30 }
+                same_key: { type: boolean, default: false }
+                revoke_old: { type: boolean, default: false }
+                days: { type: integer, description: "validity of the replacements; 0 = keep each one's original span" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  renewed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        common_name: { type: string }
+                        id: { type: integer }
+                        serial: { type: string }
+                        previous_serial: { type: string }
+                        not_after: { type: string, format: date-time }
+                  errors: { type: array, items: { type: string } }
+
+  /certificates/bulk-revoke:
+    post:
+      tags: [Certificate lifecycle]
+      summary: Revoke many certificates at once
+      description: |
+        🔒 admin. Selects by explicit `ids`, or by filter (`query`, `ca_id`,
+        `profile`, `status`) — at least one of `ids` or a filter field is
+        required; an entirely unfiltered call is refused. Already-revoked
+        certificates are skipped, not treated as errors, so this is safe to
+        re-run.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: integer } }
+                query: { type: string }
+                ca_id: { type: integer }
+                profile: { type: string }
+                status: { type: string }
+                reason:
+                  oneOf: [{ type: string }, { type: integer }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  reason: { type: string }
+                  revoked:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        common_name: { type: string }
+                        serial: { type: string }
+                  skipped: { type: array, items: { type: string } }
+                  errors: { type: array, items: { type: string } }
+                  affected_ca_ids: { type: array, items: { type: integer } }
+
+  #################### CSR & inspection ####################
+
+  /csr:
+    post:
+      tags: [CSR & inspection]
+      summary: Generate a key and CSR without signing anything
+      description: Nothing is persisted — the key is returned once, in the response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject]
+              properties:
+                subject: { $ref: "#/components/schemas/Subject" }
+                sans: { type: array, items: { type: string } }
+                key_type: { $ref: "#/components/schemas/KeyType" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  csr_pem: { type: string }
+                  private_key_pem: { type: string }
+                  key_type: { type: string }
+                  info: { type: object, description: "parsed CSR summary" }
+
+  /inspect:
+    post:
+      tags: [CSR & inspection]
+      summary: Describe any PEM certificate or CSR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pem]
+              properties:
+                pem: { type: string, description: "a PEM certificate or certificate request" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string, enum: [certificate, csr] }
+                  certificate: { type: object }
+                  csr: { type: object }
+
+  #################### API tokens ####################
+
+  /tokens:
+    get:
+      tags: [API tokens]
+      summary: List API tokens
+      description: A `user`-role caller sees only their own tokens; an admin sees everyone's.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/APIToken" }
+    post:
+      tags: [API tokens]
+      summary: Create an API token
+      description: The plaintext token is returned once — only its hash is stored. `role` may not exceed the caller's own role.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [user, admin] }
+                days: { type: integer, description: "lifetime; 0 = never expires", default: 365 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: "the plaintext bearer token — shown once" }
+                  record: { $ref: "#/components/schemas/APIToken" }
+
+  /tokens/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [API tokens]
+      summary: Revoke an API token
+      description: A `user`-role caller may only revoke their own tokens.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  #################### Users ####################
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List portal accounts
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+    post:
+      tags: [Users]
+      summary: Create a local account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                display_name: { type: string }
+                email: { type: string }
+                role: { type: string, enum: [user, admin], default: user }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/User" } }
+
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      tags: [Users]
+      summary: Update role, disabled state, or reset a local password
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [user, admin] }
+                disabled: { type: boolean }
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/User" } }
+    delete:
+      tags: [Users]
+      summary: Delete a portal account
+      description: Refused for the last enabled admin.
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  #################### Audit ####################
+
+  /audit:
+    get:
+      tags: [Audit]
+      summary: Recent audit log entries
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEntry" }
+
+  /ldap/test:
+    post:
+      tags: [Audit]
+      summary: Test LDAP connectivity, bind and search base
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+        "502": { description: "LDAP is enabled but the test failed", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  #################### ACME access ####################
+
+  /acme/eab:
+    get:
+      tags: [ACME access]
+      summary: List EAB credentials
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credentials:
+                    type: array
+                    items: { $ref: "#/components/schemas/EABCred" }
+    post:
+      tags: [ACME access]
+      summary: Create an EAB credential
+      description: The HMAC key is returned once — only its encrypted form is stored. See ACME-EAB.md.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CreateEABInput" } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential: { $ref: "#/components/schemas/EABCred" }
+                  hmac_key: { type: string, description: "base64url — put this in the cert-manager Secret" }
+
+  /acme/eab/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [ACME access]
+      summary: Get one EAB credential
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/EABCred" } }
+    delete:
+      tags: [ACME access]
+      summary: Delete an EAB credential
+      description: Refused while any ACME account was bootstrapped with it — disable it instead, or remove those accounts first.
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /acme/eab/{id}/disable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [ACME access]
+      summary: Disable or re-enable an EAB credential
+      description: Disabling stops it bootstrapping *new* accounts; accounts it already created keep working.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disabled: { type: boolean, default: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: { type: boolean }
+
+  /acme/accounts:
+    get:
+      tags: [ACME access]
+      summary: List every registered ACME account
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: "#/components/schemas/AcmeAccount" }
+
+  /acme/accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [ACME access]
+      summary: Get one ACME account
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/AcmeAccount" } }
+
+  /acme/accounts/{id}/orders:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [ACME access]
+      summary: An account's order history
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: "#/components/schemas/AcmeOrder" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "An API token from `goca token create` / `POST /tokens`, e.g. `goca_ab12cd34_...`."
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: goca_session
+      description: The portal's own session cookie. State-changing calls also need a CSRF token this docs page cannot supply — prefer a bearer token here.
+
+  parameters:
+    caRef:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Numeric id, slug, or exact name.
+    certRef:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Numeric id or hex serial.
+
+  schemas:
+    StatusOK:
+      type: object
+      properties:
+        status: { type: string }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        detail: { type: string }
+
+    KeyType:
+      type: string
+      enum: [rsa-2048, rsa-3072, rsa-4096, ec-p256, ec-p384, ec-p521, ed25519]
+
+    Subject:
+      type: object
+      properties:
+        common_name: { type: string }
+        organization: { type: string }
+        organizational_unit: { type: string }
+        country: { type: string, maxLength: 2 }
+        province: { type: string }
+        locality: { type: string }
+        street_address: { type: string }
+        postal_code: { type: string }
+        email: { type: string }
+
+    Stats:
+      type: object
+      properties:
+        cas: { type: integer }
+        certificates: { type: integer }
+        active: { type: integer }
+        revoked: { type: integer }
+        expired: { type: integer }
+        expiring_soon: { type: integer }
+        users: { type: integer }
+        issued_last_30_days: { type: integer }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        source: { type: string, enum: [local, ldap] }
+        display_name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [user, admin] }
+        disabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_login: { type: string, format: date-time, nullable: true }
+
+    APIToken:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        username: { type: string }
+        name: { type: string }
+        prefix: { type: string, description: "the token's public prefix, e.g. goca_ab12cd34" }
+        role: { type: string, enum: [user, admin] }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        revoked: { type: boolean }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        ts: { type: string, format: date-time }
+        actor: { type: string }
+        action: { type: string }
+        target: { type: string }
+        detail: { type: string }
+        ip: { type: string }
+
+    CA:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        subject: { type: string }
+        serial: { type: string }
+        key_type: { type: string }
+        is_root: { type: boolean }
+        parent_id: { type: integer, nullable: true }
+        path_len: { type: integer }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        status: { type: string, enum: [active, disabled, pending] }
+        crl_number: { type: integer }
+        fingerprint_sha256: { type: string }
+        is_default: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        last_crl_at: { type: string, format: date-time, nullable: true }
+        external: { type: boolean, description: "true if imported rather than created by goca" }
+        subject_key_id: { type: string }
+        authority_key_id: { type: string }
+    CAWithPEM:
+      allOf:
+        - $ref: "#/components/schemas/CA"
+        - type: object
+          properties:
+            cert_pem: { type: string }
+            info: { type: object, description: "present on single-resource responses: parsed signature algorithm, key/extended-key usage, CRL/OCSP URLs" }
+
+    CreateCAInput:
+      type: object
+      required: [subject]
+      properties:
+        name: { type: string, description: "defaults to the common name" }
+        subject: { $ref: "#/components/schemas/Subject" }
+        key_type: { $ref: "#/components/schemas/KeyType" }
+        days: { type: integer }
+        parent: { type: string, description: "id/slug/name of the signing authority; empty = self-signed root" }
+        path_len: { type: integer, default: 1 }
+        crl_distribution_points: { type: array, items: { type: string } }
+        ocsp_servers: { type: array, items: { type: string } }
+        permitted_dns_domains: { type: array, items: { type: string } }
+        make_default: { type: boolean }
+
+    SubordinateCSRInput:
+      type: object
+      required: [subject]
+      properties:
+        name: { type: string }
+        subject: { $ref: "#/components/schemas/Subject" }
+        key_type: { $ref: "#/components/schemas/KeyType" }
+        parent: { type: string, description: "trust anchor to chain to, if already imported" }
+
+    ImportCAInput:
+      type: object
+      required: [cert_pem]
+      properties:
+        name: { type: string }
+        cert_pem: { type: string }
+        key_pem: { type: string, description: "supply to make this an issuing CA; omit for a trust anchor" }
+        chain_pem: { type: string, description: "issuer chain, imported as trust anchors" }
+        make_default: { type: boolean }
+
+    CompleteSubordinateInput:
+      type: object
+      required: [cert_pem]
+      properties:
+        cert_pem: { type: string }
+        chain_pem: { type: string }
+        make_default: { type: boolean }
+
+    Certificate:
+      type: object
+      properties:
+        id: { type: integer }
+        ca_id: { type: integer }
+        ca_name: { type: string }
+        serial: { type: string }
+        common_name: { type: string }
+        subject: { type: string }
+        profile: { type: string, enum: [server, client, server-client, code-signing, email] }
+        key_type: { type: string }
+        has_key: { type: boolean }
+        fingerprint_sha256: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        status: { type: string, enum: [active, revoked, expired] }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        revocation_reason: { type: integer }
+        requested_by: { type: string }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+        renewed_from: { type: integer, nullable: true }
+    CertificateWithPEM:
+      allOf:
+        - $ref: "#/components/schemas/Certificate"
+        - type: object
+          properties:
+            cert_pem: { type: string }
+            sans: { type: array, items: { type: string } }
+            info: { type: object, description: "present on single-resource responses" }
+
+    IssueInput:
+      type: object
+      properties:
+        ca: { type: string, description: "authority id/slug/name; empty = the default issuing authority" }
+        mode: { type: string, enum: [generate, csr] }
+        subject: { $ref: "#/components/schemas/Subject" }
+        sans: { type: array, items: { type: string } }
+        key_type: { $ref: "#/components/schemas/KeyType" }
+        profile: { type: string, default: server }
+        days: { type: integer }
+        csr_pem: { type: string, description: "required when mode is csr" }
+        key_pem: { type: string, description: "optional: store the requester's own key alongside the CSR" }
+        store_key: { type: boolean, default: true }
+        note: { type: string }
+
+    IssueResult:
+      type: object
+      properties:
+        certificate: { $ref: "#/components/schemas/CertificateWithPEM" }
+        private_key_pem: { type: string, description: "present when a key was generated" }
+        csr_pem: { type: string }
+        chain_pem: { type: string }
+        key_stored: { type: boolean }
+
+    RenewInput:
+      type: object
+      properties:
+        days: { type: integer, description: "0 = keep the original span" }
+        same_key: { type: boolean, default: false }
+        ca: { type: string }
+        key_type: { $ref: "#/components/schemas/KeyType" }
+        revoke_old: { type: boolean, default: false }
+        store_key: { type: boolean }
+        note: { type: string }
+
+    EABCred:
+      type: object
+      properties:
+        id: { type: integer }
+        key_id: { type: string }
+        name: { type: string }
+        ca_id: { type: integer, nullable: true, description: "null = the default issuing CA, resolved per order" }
+        profile: { type: string }
+        days: { type: integer, description: "0 = the CA/global default" }
+        allowed_domains: { type: array, items: { type: string }, description: "shell-glob patterns; empty = unrestricted" }
+        max_accounts: { type: integer, description: "0 = unlimited" }
+        account_count: { type: integer }
+        disabled: { type: boolean }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+
+    CreateEABInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        ca: { type: string, description: "authority accounts issue from; empty = default issuing CA" }
+        profile: { type: string, default: server }
+        days: { type: integer }
+        allowed_domains: { type: array, items: { type: string } }
+        max_accounts: { type: integer }
+        expires_in_days: { type: integer, description: "auto-disable after N days; 0 = never" }
+
+    AcmeAccount:
+      type: object
+      properties:
+        id: { type: integer }
+        eab_id: { type: integer }
+        eab_name: { type: string }
+        contact: { type: array, items: { type: string } }
+        status: { type: string, enum: [valid, deactivated] }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+
+    AcmeOrder:
+      type: object
+      properties:
+        id: { type: integer }
+        account_id: { type: integer }
+        status: { type: string, enum: [pending, ready, processing, valid, invalid] }
+        identifiers:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              value: { type: string }
+        certificate_id: { type: integer, nullable: true }
+        error: { type: string }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }

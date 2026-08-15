@@ -20,6 +20,12 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
+// openapiSpec is the API reference served at /settings/api-docs, rendered
+// with the Swagger UI assets embedded under static/swagger.
+//
+//go:embed openapi.yaml
+var openapiSpec []byte
+
 // templates holds one parsed template set per page.
 type templates struct {
 	pages map[string]*template.Template

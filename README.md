@@ -330,6 +330,15 @@ Aliases like `RSA 4096`, `p-256` and `prime256v1` are accepted everywhere.
 Every endpoint lives under `/api/v1` and accepts either a portal session cookie
 or a bearer token.
 
+**Interactive reference:** sign in as an admin and open **API** in the top
+navigation (`/settings/api-docs`) for a full Swagger UI browser over every
+endpoint below, generated from an embedded OpenAPI 3.0 spec
+([internal/web/openapi.yaml](internal/web/openapi.yaml)) — including a
+"Try it out" console once you paste a bearer token into its Authorize dialog.
+Everything is vendored (no CDN calls), matching the portal's own strict CSP.
+The raw spec is also downloadable from that page, or directly at
+`/settings/api-docs/openapi.yaml` (admin session required).
+
 ```bash
 goca token create ansible --role admin --days 365
 ```
@@ -491,3 +500,8 @@ GOOS=linux GOARCH=amd64 go build -o goca-linux-amd64 .
 | `internal/web` | portal handlers, REST API, embedded templates and assets |
 | `internal/cli` | cobra commands |
 | `internal/service` | systemd and launchd unit generation |
+| `internal/acme` | RFC 8555 ACME server (EAB-only) — see [ACME-EAB.md](ACME-EAB.md) |
+
+Vendored, not written here: [Swagger UI](https://github.com/swagger-api/swagger-ui)
+(Apache 2.0, license kept alongside it at `internal/web/static/swagger/LICENSE`),
+serving the interactive API docs at `/settings/api-docs`.

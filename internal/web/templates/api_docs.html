@@ -1,0 +1,28 @@
+{{define "content"}}
+<div class="page-head">
+  <div>
+    <h1>API reference</h1>
+    <p class="subtitle">Every REST endpoint goca exposes, generated from the same route table the
+       server itself runs. Everything here also exists in the CLI — see
+       <a href="https://github.com/mevijays/goca/blob/main/USAGE.md">USAGE.md</a>.</p>
+  </div>
+  <a class="btn secondary" href="/settings/api-docs/openapi.yaml">Download spec (.yaml)</a>
+</div>
+
+<div class="callout info">
+  <strong>Authenticating "Try it out":</strong> click <strong>Authorize</strong> below and paste a
+  bearer token (<span class="mono">goca token create ...</span>, or from
+  <a href="/settings">Settings</a>). Your portal session also works for <span class="mono">GET</span>
+  requests, but not for anything that changes state — those need the CSRF header this page can't
+  supply, so use a token for <span class="mono">POST</span>/<span class="mono">PATCH</span>/<span class="mono">DELETE</span> calls.
+</div>
+
+<link rel="stylesheet" href="/static/swagger/swagger-ui.css">
+<div class="card tight" style="padding:0">
+  <div id="swagger-ui"></div>
+</div>
+
+<script src="/static/swagger/swagger-ui-bundle.js"></script>
+<script src="/static/swagger/swagger-ui-standalone-preset.js"></script>
+<script src="/static/api-docs-init.js"></script>
+{{end}}
