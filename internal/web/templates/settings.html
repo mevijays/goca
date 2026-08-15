@@ -1,0 +1,225 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Settings</h1>
+    <p class="subtitle">Account, API tokens{{if .User.IsAdmin}}, users and directory configuration{{end}}</p>
+  </div>
+</div>
+
+{{if $d.NewToken}}
+<div class="secret-box">
+  <strong>API token created.</strong> Copy it now — it is stored only as a hash and cannot be shown again.
+  <code id="new-token">{{$d.NewToken}}</code>
+  <button class="copy-btn" data-copy="#new-token" type="button" style="position:static;margin-top:8px">copy</button>
+</div>
+{{end}}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Your account</h2>
+    <dl class="dl">
+      <dt>Username</dt><dd>{{.User.Username}}</dd>
+      <dt>Display name</dt><dd>{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}<span class="dim">-</span>{{end}}</dd>
+      <dt>Email</dt><dd>{{if .User.Email}}{{.User.Email}}{{else}}<span class="dim">-</span>{{end}}</dd>
+      <dt>Role</dt><dd><span class="badge {{if .User.IsAdmin}}admin{{end}}">{{.User.Role}}</span></dd>
+      <dt>Source</dt><dd>{{.User.Source}}</dd>
+      <dt>Last login</dt><dd>{{fmtTimePtr .User.LastLogin}}</dd>
+    </dl>
+
+    {{if eq .User.Source "local"}}
+    <h3 style="margin-top:18px">Change password</h3>
+    <form method="post" action="/settings/password">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="field">
+        <label for="current_password">Current password</label>
+        <input type="password" id="current_password" name="current_password"
+               autocomplete="current-password" required>
+      </div>
+      <div class="field">
+        <label for="new_password">New password</label>
+        <input type="password" id="new_password" name="new_password"
+               autocomplete="new-password" minlength="8" required>
+      </div>
+      <button class="btn" type="submit">Update password</button>
+    </form>
+    {{else}}
+    <p class="hint" style="margin-top:14px">
+      Your password is managed by the directory server; change it there.
+    </p>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <h2>API tokens</h2>
+    <p class="hint" style="margin-top:0">Use with
+      <span class="mono">Authorization: Bearer &lt;token&gt;</span> against
+      <span class="mono">{{.BaseURL}}/api/v1</span>.</p>
+    <form method="post" action="/settings/tokens">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="toolbar">
+        <div class="field grow">
+          <label for="token_name">Name</label>
+          <input type="text" id="token_name" name="name" placeholder="ansible-deploy" required>
+        </div>
+        <div class="field">
+          <label for="token_days">Expires in (days)</label>
+          <input type="number" id="token_days" name="days" min="0" max="3650" value="365">
+          <p class="hint">0 = never</p>
+        </div>
+        {{if .User.IsAdmin}}
+        <div class="field">
+          <label for="token_role">Role</label>
+          <select id="token_role" name="role">
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        {{end}}
+        <div class="field"><button class="btn" type="submit">Create token</button></div>
+      </div>
+    </form>
+
+    {{if $d.Tokens}}
+    <div class="table-wrap" style="margin-top:14px">
+      <table>
+        <thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+        <tbody>
+        {{range $d.Tokens}}
+          <tr>
+            <td>{{.Name}} {{if .Revoked}}<span class="badge danger">revoked</span>{{end}}</td>
+            <td class="mono dim">goca_{{.Prefix}}…</td>
+            <td><span class="badge {{if eq .Role "admin"}}admin{{end}}">{{.Role}}</span></td>
+            <td class="dim nowrap">{{if .ExpiresAt}}{{fmtTimePtr .ExpiresAt}}{{else}}never{{end}}</td>
+            <td class="dim nowrap">{{if .LastUsedAt}}{{fmtTimePtr .LastUsedAt}}{{else}}-{{end}}</td>
+            <td class="right">
+              {{if not .Revoked}}
+              <form method="post" action="/settings/tokens/{{.ID}}/revoke" class="inline"
+                    data-confirm="Revoke token {{.Name}}?">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+                <button class="linkbtn" type="submit">revoke</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="dim" style="margin-top:14px">No tokens yet.</p>
+    {{end}}
+  </div>
+</div>
+
+{{if .User.IsAdmin}}
+<div class="card tight">
+  <div class="card-head">
+    <h2>Users</h2>
+    <span class="dim">Directory accounts appear automatically on first sign-in</span>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/settings/users">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="toolbar">
+        <div class="field"><label for="u_name">Username</label>
+          <input type="text" id="u_name" name="username" required></div>
+        <div class="field"><label for="u_pass">Password</label>
+          <input type="password" id="u_pass" name="password" minlength="8" required></div>
+        <div class="field"><label for="u_display">Display name</label>
+          <input type="text" id="u_display" name="display_name"></div>
+        <div class="field"><label for="u_email">Email</label>
+          <input type="text" id="u_email" name="email"></div>
+        <div class="field"><label for="u_role">Role</label>
+          <select id="u_role" name="role"><option value="user">user</option><option value="admin">admin</option></select></div>
+        <div class="field"><button class="btn" type="submit">Add local user</button></div>
+      </div>
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Username</th><th>Name</th><th>Email</th><th>Source</th><th>Role</th>
+                 <th>Last login</th><th class="right">Actions</th></tr></thead>
+      <tbody>
+      {{range $d.Users}}
+        <tr>
+          <td>{{.Username}} {{if .Disabled}}<span class="badge danger">disabled</span>{{end}}</td>
+          <td class="dim">{{.DisplayName}}</td>
+          <td class="dim">{{.Email}}</td>
+          <td class="dim">{{.Source}}</td>
+          <td><span class="badge {{if .IsAdmin}}admin{{end}}">{{.Role}}</span></td>
+          <td class="dim nowrap">{{fmtTimePtr .LastLogin}}</td>
+          <td class="right nowrap">
+            <form method="post" action="/settings/users/{{.ID}}/role" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="role" value="{{if .IsAdmin}}user{{else}}admin{{end}}">
+              <button class="linkbtn" type="submit">{{if .IsAdmin}}make user{{else}}make admin{{end}}</button>
+            </form>
+            <span class="dim">·</span>
+            <form method="post" action="/settings/users/{{.ID}}/disable" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="disabled" value="{{if .Disabled}}0{{else}}1{{end}}">
+              <button class="linkbtn" type="submit">{{if .Disabled}}enable{{else}}disable{{end}}</button>
+            </form>
+            <span class="dim">·</span>
+            <form method="post" action="/settings/users/{{.ID}}/delete" class="inline"
+                  data-confirm="Delete user {{.Username}}?">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <button class="linkbtn" type="submit">delete</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Directory (LDAP)</h2>
+    {{if $d.LDAP.Enabled}}
+    <dl class="dl">
+      <dt>Server</dt><dd class="mono">{{$d.LDAP.URL}}</dd>
+      <dt>StartTLS</dt><dd>{{$d.LDAP.StartTLS}}</dd>
+      <dt>Verify certificate</dt>
+      <dd>{{if $d.LDAP.InsecureSkipVerify}}<span class="badge danger">disabled</span>{{else}}enabled{{end}}</dd>
+      <dt>Bind DN</dt><dd class="mono">{{if $d.LDAP.BindDN}}{{$d.LDAP.BindDN}}{{else}}anonymous{{end}}</dd>
+      <dt>Base DN</dt><dd class="mono">{{$d.LDAP.BaseDN}}</dd>
+      <dt>User filter</dt><dd class="mono">{{$d.LDAP.UserFilter}}</dd>
+      <dt>Group base DN</dt><dd class="mono">{{$d.LDAP.GroupBaseDN}}</dd>
+      <dt>Group filter</dt><dd class="mono">{{$d.LDAP.GroupFilter}}</dd>
+      <dt>Admin groups</dt><dd class="mono">{{join $d.LDAP.AdminGroups ", "}}</dd>
+      <dt>Allowed groups</dt>
+      <dd class="mono">{{if $d.LDAP.AllowedGroups}}{{join $d.LDAP.AllowedGroups ", "}}{{else}}<span class="dim">any authenticated user</span>{{end}}</dd>
+    </dl>
+    <form method="post" action="/settings/ldap/test" style="margin-top:14px">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="btn secondary" type="submit">Test connection</button>
+    </form>
+    {{else}}
+    <p class="dim">LDAP is disabled. Enable it by re-running
+      <span class="mono">goca setup</span> or editing the config file.</p>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <h2>Server</h2>
+    <dl class="dl">
+      <dt>Config file</dt><dd class="mono">{{$d.ConfigPath}}</dd>
+      <dt>Database</dt><dd class="mono">{{$d.DBPath}}</dd>
+      <dt>Data directory</dt><dd class="mono">{{$d.DataDir}}</dd>
+      <dt>Base URL</dt><dd class="mono">{{.BaseURL}}</dd>
+      <dt>Auth mode</dt><dd>{{.AuthMode}}</dd>
+      <dt>Session lifetime</dt><dd>{{$d.SessionTTL}}</dd>
+      <dt>Default cert validity</dt><dd>{{$d.DefaultCertDays}} days</dd>
+      <dt>Default CA validity</dt><dd>{{$d.DefaultCADays}} days</dd>
+      <dt>CRL validity</dt><dd>{{$d.CRLDays}} days</dd>
+      <dt>Version</dt><dd>{{.Version}}</dd>
+    </dl>
+    <p class="hint">Server settings live in the config file so they survive restarts.
+       Edit it and restart the service, or re-run <span class="mono">goca setup</span>.</p>
+  </div>
+</div>
+{{end}}
+{{end}}

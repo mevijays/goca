@@ -1,0 +1,160 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Request a certificate</h1>
+    <p class="subtitle">Either let goca generate the key and CSR for you, or paste a CSR
+       you produced with openssl.</p>
+  </div>
+  <a class="btn secondary" href="/certificates">Cancel</a>
+</div>
+
+{{if $d.Error}}<div class="flash error">{{$d.Error}}</div>{{end}}
+
+{{if not $d.CAs}}
+<div class="card">
+  <div class="empty">
+    <h2>No authority available</h2>
+    <p>A certificate authority must exist before certificates can be issued.</p>
+    {{if .User.IsAdmin}}<a class="btn" href="/cas/new">Create one</a>{{end}}
+  </div>
+</div>
+{{else}}
+
+<form method="post" action="/certificates/new" class="card">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+  <fieldset>
+    <legend>1. How do you want to supply the key?</legend>
+    <div class="radio-cards">
+      <label class="radio-card">
+        <input type="radio" name="mode" value="generate" {{if ne $d.Form.Mode "csr"}}checked{{end}}>
+        <span class="rc-title">Generate a key and CSR for me</span>
+        <div class="rc-desc">goca creates the private key, builds the CSR, signs it, and lets
+          you download the key and certificate now or later.</div>
+      </label>
+      <label class="radio-card">
+        <input type="radio" name="mode" value="csr" {{if eq $d.Form.Mode "csr"}}checked{{end}}>
+        <span class="rc-title">I already have a CSR</span>
+        <div class="rc-desc">Paste a CSR from <span class="mono">openssl req</span>. The private
+          key never leaves your machine unless you choose to store it.</div>
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset data-mode="csr" hidden>
+    <legend>2. Your certificate signing request</legend>
+    <div class="field">
+      <label for="csr_pem">CSR (PEM)</label>
+      <textarea id="csr_pem" name="csr_pem" rows="10"
+                placeholder="-----BEGIN CERTIFICATE REQUEST-----">{{$d.Form.CSRPEM}}</textarea>
+      <p class="hint">Generate one with:
+        <span class="mono">openssl req -new -newkey rsa:2048 -nodes -keyout my.key -out my.csr</span></p>
+    </div>
+    <div class="field">
+      <label for="key_pem">Private key (PEM, optional)</label>
+      <textarea id="key_pem" name="key_pem" rows="5"
+                placeholder="-----BEGIN PRIVATE KEY-----">{{$d.Form.KeyPEM}}</textarea>
+      <p class="hint">Only supply this if you want goca to store the key so you can re-download
+         the pair later. It is verified against the CSR and encrypted at rest.</p>
+    </div>
+  </fieldset>
+
+  <fieldset data-mode="generate">
+    <legend>2. Subject</legend>
+    <div class="field">
+      <label for="common_name">Common name (CN)</label>
+      <input type="text" id="common_name" name="common_name" value="{{$d.Form.CommonName}}"
+             placeholder="app.internal.lan">
+      <p class="hint">Required when generating. When signing a CSR, leave the subject fields
+         blank to keep what the CSR carries.</p>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="organization">Organization (O)</label>
+        <input type="text" id="organization" name="organization" value="{{$d.Form.Organization}}">
+      </div>
+      <div class="field">
+        <label for="organizational_unit">Organizational unit (OU)</label>
+        <input type="text" id="organizational_unit" name="organizational_unit" value="{{$d.Form.OrganizationalUnit}}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="country">Country (C)</label>
+        <input type="text" id="country" name="country" maxlength="2" value="{{$d.Form.Country}}">
+      </div>
+      <div class="field">
+        <label for="province">State / province (ST)</label>
+        <input type="text" id="province" name="province" value="{{$d.Form.Province}}">
+      </div>
+      <div class="field">
+        <label for="locality">Locality (L)</label>
+        <input type="text" id="locality" name="locality" value="{{$d.Form.Locality}}">
+      </div>
+    </div>
+    <div class="field">
+      <label for="key_type">Key type</label>
+      <select id="key_type" name="key_type">
+        {{range keyTypes}}
+        <option value="{{.}}" {{if eq (printf "%s" .) $d.Form.KeyType}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Certificate options</legend>
+    <div class="field">
+      <label for="sans">Subject alternative names</label>
+      <input type="text" id="sans" name="sans" value="{{$d.Form.SANs}}"
+             placeholder="app.internal.lan, api.internal.lan, 10.0.0.20, admin@example.com">
+      <p class="hint">Comma separated. Types are detected automatically, or prefix explicitly with
+         <span class="mono">DNS:</span>, <span class="mono">IP:</span>, <span class="mono">EMAIL:</span>,
+         <span class="mono">URI:</span>. When signing a CSR, filling this in replaces the CSR's own SANs.</p>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="ca">Issuing authority</label>
+        <select id="ca" name="ca">
+          {{range $d.CAs}}
+          <option value="{{.ID}}" {{if eq (printf "%d" .ID) $d.Form.CA}}selected{{end}}>
+            {{.Name}}{{if .IsDefault}} (default){{end}}
+          </option>
+          {{end}}
+        </select>
+      </div>
+      <div class="field">
+        <label for="profile">Profile</label>
+        <select id="profile" name="profile">
+          {{range profiles}}
+          <option value="{{.}}" {{if eq (printf "%s" .) $d.Form.Profile}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+        <p class="hint">Sets key usage and extended key usage.</p>
+      </div>
+      <div class="field">
+        <label for="days">Validity (days)</label>
+        <input type="number" id="days" name="days" min="1" max="7300" value="{{$d.Form.Days}}">
+      </div>
+    </div>
+    <div class="field">
+      <label for="note">Note (optional)</label>
+      <input type="text" id="note" name="note" value="{{$d.Form.Note}}"
+             placeholder="What is this certificate for?">
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="store_key" value="1" {{if $d.Form.StoreKey}}checked{{end}}>
+        Store the private key so it can be downloaded again later</label>
+      <p class="hint">Keys are encrypted with the server master key. Uncheck for a
+         download-once workflow where goca keeps only the certificate.</p>
+    </div>
+  </fieldset>
+
+  <div class="btn-row">
+    <button class="btn" type="submit">Issue certificate</button>
+    <a class="btn secondary" href="/certificates">Cancel</a>
+  </div>
+</form>
+{{end}}
+{{end}}

@@ -1,0 +1,38 @@
+{{define "content"}}
+<div class="login-card">
+  <div class="login-head">
+    <div class="brand-mark">CA</div>
+    <h1>goca</h1>
+    <p>Certificate authority portal</p>
+  </div>
+
+  {{if .Data.Error}}
+  <div class="flash error">{{.Data.Error}}</div>
+  {{end}}
+
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <input type="hidden" name="next" value="{{.Data.Next}}">
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username"
+             autocapitalize="none" spellcheck="false" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button class="btn" type="submit" style="width:100%">Sign in</button>
+  </form>
+
+  <p class="hint" style="text-align:center;margin-top:16px">
+    {{if and .Data.LDAP .Data.Local}}
+      Sign in with your directory account, or the local administrator account.
+    {{else if .Data.LDAP}}
+      Sign in with your directory (LDAP) account.
+    {{else}}
+      Sign in with your local goca account.
+    {{end}}
+  </p>
+</div>
+{{end}}

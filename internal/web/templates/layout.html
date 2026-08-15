@@ -1,0 +1,57 @@
+{{- /* layout.html - the shell every page renders inside */ -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · goca</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+{{if .User}}
+<header class="topbar">
+  <a class="brand" href="/">
+    <span class="brand-mark">CA</span>
+    <span class="brand-text">goca</span>
+  </a>
+  <nav class="mainnav">
+    <a href="/" class="{{if eq .Nav "dashboard"}}active{{end}}">Dashboard</a>
+    <a href="/cas" class="{{if eq .Nav "cas"}}active{{end}}">Authorities</a>
+    <a href="/certificates" class="{{if eq .Nav "certs"}}active{{end}}">Certificates</a>
+    <a href="/certificates/new" class="{{if eq .Nav "request"}}active{{end}}">Request</a>
+    <a href="/tools/csr" class="{{if eq .Nav "csr"}}active{{end}}">CSR tool</a>
+    {{if .User.IsAdmin}}<a href="/settings/acme" class="{{if eq .Nav "acme"}}active{{end}}">ACME</a>{{end}}
+    {{if .User.IsAdmin}}<a href="/audit" class="{{if eq .Nav "audit"}}active{{end}}">Audit</a>{{end}}
+    <a href="/settings" class="{{if eq .Nav "settings"}}active{{end}}">Settings</a>
+  </nav>
+  <div class="userbox">
+    <span class="user-name" title="{{.User.Source}} account">{{.User.Username}}</span>
+    {{if .User.IsAdmin}}<span class="badge admin">admin</span>{{end}}
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="linkbtn" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+{{end}}
+
+<main class="{{if .User}}with-nav{{else}}plain{{end}}">
+  {{if .Flash}}
+  <div class="flash {{.Flash.Kind}}" role="status">{{.Flash.Text}}</div>
+  {{end}}
+  {{template "content" .}}
+</main>
+
+{{if .User}}
+<footer class="footer">
+  <span>goca {{.Version}}</span>
+  <span class="sep">·</span>
+  <span>auth: {{.AuthMode}}</span>
+  <span class="sep">·</span>
+  <a href="/api/v1/health">health</a>
+</footer>
+{{end}}
+<script src="/static/app.js"></script>
+</body>
+</html>

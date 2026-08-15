@@ -1,0 +1,114 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>CSR generator</h1>
+    <p class="subtitle">Create a private key and certificate signing request without issuing
+       anything. Nothing is stored — download both and sign them here or anywhere else.</p>
+  </div>
+</div>
+
+{{if $d.Error}}<div class="flash error">{{$d.Error}}</div>{{end}}
+
+{{if $d.Result}}
+<div class="callout danger">
+  <strong>This key is not stored anywhere.</strong> Copy or download it now.
+</div>
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head" style="margin:-18px -18px 16px">
+      <h2>Private key</h2>
+      <button class="copy-btn" data-copy="#gen-key" type="button">copy</button>
+    </div>
+    <pre class="pem" id="gen-key">{{$d.Result.PrivateKeyPEM}}</pre>
+  </div>
+  <div class="card">
+    <div class="card-head" style="margin:-18px -18px 16px">
+      <h2>Certificate signing request</h2>
+      <button class="copy-btn" data-copy="#gen-csr" type="button">copy</button>
+    </div>
+    <pre class="pem" id="gen-csr">{{$d.Result.CSRPEM}}</pre>
+  </div>
+</div>
+<div class="card">
+  <h2>Summary</h2>
+  <dl class="dl">
+    <dt>Subject</dt><dd class="mono">{{$d.Result.Info.Subject}}</dd>
+    <dt>SANs</dt><dd class="mono">{{if $d.Result.Info.SANs}}{{join $d.Result.Info.SANs ", "}}{{else}}none{{end}}</dd>
+    <dt>Key type</dt><dd>{{$d.Result.KeyType}}</dd>
+    <dt>Signature</dt><dd>{{$d.Result.Info.SignatureAlgorithm}}</dd>
+  </dl>
+  <div class="btn-row">
+    <a class="btn" href="/certificates/new?mode=csr">Sign this CSR with a goca authority</a>
+  </div>
+</div>
+{{end}}
+
+<form method="post" action="/tools/csr" class="card">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <fieldset>
+    <legend>Subject</legend>
+    <div class="field">
+      <label for="common_name">Common name (CN)</label>
+      <input type="text" id="common_name" name="common_name" value="{{$d.Form.CommonName}}"
+             placeholder="app.internal.lan" required>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="organization">Organization (O)</label>
+        <input type="text" id="organization" name="organization" value="{{$d.Form.Organization}}">
+      </div>
+      <div class="field">
+        <label for="organizational_unit">Organizational unit (OU)</label>
+        <input type="text" id="organizational_unit" name="organizational_unit" value="{{$d.Form.OrganizationalUnit}}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="country">Country (C)</label>
+        <input type="text" id="country" name="country" maxlength="2" value="{{$d.Form.Country}}">
+      </div>
+      <div class="field">
+        <label for="province">State / province (ST)</label>
+        <input type="text" id="province" name="province" value="{{$d.Form.Province}}">
+      </div>
+      <div class="field">
+        <label for="locality">Locality (L)</label>
+        <input type="text" id="locality" name="locality" value="{{$d.Form.Locality}}">
+      </div>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Key and names</legend>
+    <div class="field">
+      <label for="sans">Subject alternative names</label>
+      <input type="text" id="sans" name="sans" value="{{$d.Form.SANs}}"
+             placeholder="app.internal.lan, 10.0.0.20">
+    </div>
+    <div class="field">
+      <label for="key_type">Key type</label>
+      <select id="key_type" name="key_type">
+        {{range keyTypes}}
+        <option value="{{.}}" {{if eq (printf "%s" .) $d.Form.KeyType}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </div>
+  </fieldset>
+  <div class="btn-row">
+    <button class="btn" type="submit">Generate key and CSR</button>
+    <button class="btn secondary" type="submit" name="download" value="1">Generate and download .zip</button>
+  </div>
+</form>
+
+<div class="card">
+  <h2>The openssl equivalent</h2>
+  <div class="copy-wrap">
+    <pre class="pem" id="openssl-cmd">openssl req -new -newkey rsa:2048 -nodes \
+  -keyout my.key -out my.csr \
+  -subj "/CN=app.internal.lan/O=Example" \
+  -addext "subjectAltName=DNS:app.internal.lan,IP:10.0.0.20"</pre>
+    <button class="copy-btn" data-copy="#openssl-cmd" type="button">copy</button>
+  </div>
+  <p class="hint">A CSR made this way can be pasted straight into the request form.</p>
+</div>
+{{end}}

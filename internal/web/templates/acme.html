@@ -1,0 +1,195 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>ACME</h1>
+    <p class="subtitle">RFC 8555, External Account Binding only — no HTTP-01/DNS-01 challenge is ever
+       validated. An EAB credential <em>is</em> the trust decision: it binds every account
+       bootstrapped with it to one authority, one profile, and optionally a set of domains.</p>
+  </div>
+</div>
+
+<div class="callout info">
+  Directory URL: <span class="mono">{{$d.DirectoryURL}}</span>
+  <div class="copy-wrap" style="margin-top:8px">
+    <pre class="pem" id="dir-url">{{$d.DirectoryURL}}</pre>
+    <button class="copy-btn" data-copy="#dir-url" type="button">copy</button>
+  </div>
+  Point a cert-manager <span class="mono">ClusterIssuer</span>'s <span class="mono">spec.acme.server</span>
+  at this URL. See <a href="https://github.com/mevijays/goca/blob/main/ACME-EAB.md">ACME-EAB.md</a> for the
+  full YAML.
+</div>
+
+{{if $d.NewSecret}}
+<div class="secret-box">
+  <strong>EAB credential created.</strong> The HMAC key is shown once — copy it into your
+  cert-manager Secret now.
+  <dl class="dl" style="margin-top:10px">
+    <dt>Key ID</dt><dd class="mono">{{$d.NewKeyID}}</dd>
+    <dt>HMAC key</dt><dd><code id="new-hmac">{{$d.NewSecret}}</code></dd>
+  </dl>
+  <button class="copy-btn" data-copy="#new-hmac" type="button" style="position:static;margin-top:8px">copy key</button>
+</div>
+{{end}}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>New EAB credential</h2>
+    <form method="post" action="/settings/acme/eab">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="field">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" placeholder="cluster-a" required>
+        <p class="hint">Identifies this credential in lists and audit entries — e.g. the cluster
+           or team it's issued to.</p>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="ca">Issuing authority</label>
+          <select id="ca" name="ca">
+            <option value="">Default issuing authority</option>
+            {{range $d.CAs}}
+            <option value="{{.ID}}">{{.Name}}{{if .IsDefault}} (default){{end}}</option>
+            {{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label for="profile">Profile</label>
+          <select id="profile" name="profile">
+            {{range profiles}}
+            <option value="{{.}}" {{if eq (printf "%s" .) "server"}}selected{{end}}>{{.}}</option>
+            {{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label for="days">Validity (days)</label>
+          <input type="number" id="days" name="days" min="0" placeholder="authority default" value="0">
+        </div>
+      </div>
+      <div class="field">
+        <label for="allowed_domains">Allowed domains</label>
+        <input type="text" id="allowed_domains" name="allowed_domains"
+               placeholder="*.svc.cluster-a.internal, *.internal.lab">
+        <p class="hint">Comma separated shell-glob patterns. <span class="mono">*</span> matches
+           across dot boundaries, so <span class="mono">*.internal.lab</span> also covers
+           <span class="mono">a.b.internal.lab</span>. Leave blank to allow any domain — the
+           authority itself may still be constrained separately.</p>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="max_accounts">Max accounts</label>
+          <input type="number" id="max_accounts" name="max_accounts" min="0" value="0">
+          <p class="hint">0 = unlimited. Most setups need exactly 1 (one cert-manager Issuer).</p>
+        </div>
+        <div class="field">
+          <label for="expires_in_days">Credential expires in (days)</label>
+          <input type="number" id="expires_in_days" name="expires_in_days" min="0" value="0">
+          <p class="hint">0 = never. Only disables new registrations — existing accounts keep working.</p>
+        </div>
+      </div>
+      <button class="btn" type="submit">Create credential</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>The same thing from the CLI</h2>
+    <div class="copy-wrap">
+      <pre class="pem" id="cli-eab">goca acme eab create cluster-a \
+  --ca acme-issuing-ca \
+  --allowed-domain '*.svc.cluster-a.internal' \
+  --max-accounts 1
+
+goca acme eab list
+goca acme eab show cluster-a
+goca acme eab disable cluster-a
+goca acme accounts list</pre>
+      <button class="copy-btn" data-copy="#cli-eab" type="button">copy</button>
+    </div>
+    <p class="hint">Disabling a credential stops it bootstrapping <em>new</em> accounts; accounts
+       already created with it keep renewing, since from registration onward they sign with
+       their own key, not the EAB secret.</p>
+  </div>
+</div>
+
+<div class="card tight">
+  <div class="card-head">
+    <h2>EAB credentials</h2>
+    <span class="dim">{{len $d.Creds}} total</span>
+  </div>
+  {{if $d.Creds}}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th><th>Key ID</th><th>Authority</th><th>Profile</th><th>Domains</th>
+          <th>Accounts</th><th>State</th><th class="right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range $d.Creds}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td class="mono">{{.KeyID}}</td>
+          <td class="dim">{{if .CAID}}#{{.CAID}}{{else}}default{{end}}</td>
+          <td class="dim">{{.Profile}}</td>
+          <td class="dim mono" style="font-size:11px">{{if .AllowedDomains}}{{join .AllowedDomains ", "}}{{else}}any{{end}}</td>
+          <td class="num dim">{{.AccountCount}}{{if .MaxAccounts}} / {{.MaxAccounts}}{{end}}</td>
+          <td>
+            {{if .Disabled}}<span class="badge danger">disabled</span>
+            {{else}}<span class="badge ok">active</span>{{end}}
+          </td>
+          <td class="right nowrap">
+            <form method="post" action="/settings/acme/eab/{{.ID}}/disable" class="inline">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <input type="hidden" name="disabled" value="{{if .Disabled}}0{{else}}1{{end}}">
+              <button class="linkbtn" type="submit">{{if .Disabled}}enable{{else}}disable{{end}}</button>
+            </form>
+            <span class="dim">·</span>
+            <form method="post" action="/settings/acme/eab/{{.ID}}/delete" class="inline"
+                  data-confirm="Delete EAB credential {{.Name}}? This only works while no accounts were bootstrapped with it.">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <button class="linkbtn" type="submit">delete</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty"><p>No EAB credentials yet.</p></div>
+  {{end}}
+</div>
+
+<div class="card tight">
+  <div class="card-head">
+    <h2>Registered accounts</h2>
+    <span class="dim">{{len $d.Accounts}} total</span>
+  </div>
+  {{if $d.Accounts}}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>EAB credential</th><th>Contact</th><th>Status</th><th>Registered</th><th>Last used</th></tr></thead>
+      <tbody>
+      {{range $d.Accounts}}
+        <tr>
+          <td class="mono">{{.ID}}</td>
+          <td>{{.EABName}}</td>
+          <td class="dim">{{join .Contact ", "}}</td>
+          <td><span class="badge {{if eq .Status "valid"}}ok{{else}}muted{{end}}">{{.Status}}</span></td>
+          <td class="dim nowrap">{{fmtTime .CreatedAt}}</td>
+          <td class="dim nowrap">{{fmtTimePtr .LastUsedAt}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint" style="padding:0 18px 14px">Every certificate an account requests is an
+     ordinary goca certificate from the moment it's issued — find it in
+     <a href="/certificates">Certificates</a>, filtered by requester
+     <span class="mono">acme:&lt;credential name&gt;</span>.</p>
+  {{else}}
+  <div class="empty"><p>No ACME client has registered yet.</p></div>
+  {{end}}
+</div>
+{{end}}

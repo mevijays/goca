@@ -1,0 +1,35 @@
+# build output
+/goca
+/goca-*
+/dist/
+*.exe
+*.exe~
+*.test
+
+# local runtime data (never commit: contains keys)
+*.db
+*.db-wal
+*.db-shm
+config.yaml
+*.key
+*.p12
+
+# exported certificate/CSR material from ad hoc CLI use in the repo root
+/out/
+/ca/
+/req/
+
+# Go
+/vendor/
+
+# editors / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# env / secrets
+.env
+.env.*

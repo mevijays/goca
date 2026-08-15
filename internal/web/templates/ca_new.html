@@ -1,0 +1,143 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>New certificate authority</h1>
+    <p class="subtitle">Generates a key pair, self-signs (or chains to a parent) and stores
+       both in the database, encrypted with the server master key.</p>
+  </div>
+  <a class="btn secondary" href="/cas">Cancel</a>
+</div>
+
+{{if $d.Error}}<div class="flash error">{{$d.Error}}</div>{{end}}
+
+<form method="post" action="/cas/new" class="card">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+  <fieldset>
+    <legend>1. Authority type</legend>
+    <div class="radio-cards">
+      <label class="radio-card">
+        <input type="radio" name="ca_kind" value="root" {{if ne $d.Form.Kind "intermediate"}}checked{{end}}>
+        <span class="rc-title">Root CA</span>
+        <div class="rc-desc">Self-signed trust anchor. Distribute this certificate to clients.</div>
+      </label>
+      <label class="radio-card">
+        <input type="radio" name="ca_kind" value="intermediate"
+               {{if eq $d.Form.Kind "intermediate"}}checked{{end}}
+               {{if not $d.CAs}}disabled{{end}}>
+        <span class="rc-title">Intermediate CA</span>
+        <div class="rc-desc">
+          {{if $d.CAs}}Signed by an existing authority; keeps the root offline-able.
+          {{else}}Create a root first.{{end}}
+        </div>
+      </label>
+    </div>
+    <div class="field" data-kind="intermediate" style="margin-top:14px" hidden>
+      <label for="parent">Parent authority</label>
+      <select id="parent" name="parent">
+        {{range $d.CAs}}
+        <option value="{{.ID}}" {{if eq (printf "%d" .ID) $d.Form.Parent}}selected{{end}}>
+          {{.Name}} — expires {{fmtDate .NotAfter}}
+        </option>
+        {{end}}
+      </select>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Identity</legend>
+    <div class="field">
+      <label for="name">Display name</label>
+      <input type="text" id="name" name="name" value="{{$d.Form.Name}}"
+             placeholder="Acme Root CA" required>
+      <p class="hint">Used in lists and in the download URL. Defaults to the common name.</p>
+    </div>
+    <div class="field">
+      <label for="common_name">Common name (CN)</label>
+      <input type="text" id="common_name" name="common_name" value="{{$d.Form.CommonName}}"
+             placeholder="Acme Root CA" required>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="organization">Organization (O)</label>
+        <input type="text" id="organization" name="organization" value="{{$d.Form.Organization}}">
+      </div>
+      <div class="field">
+        <label for="organizational_unit">Organizational unit (OU)</label>
+        <input type="text" id="organizational_unit" name="organizational_unit"
+               value="{{$d.Form.OrganizationalUnit}}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="country">Country (C)</label>
+        <input type="text" id="country" name="country" maxlength="2" placeholder="IN"
+               value="{{$d.Form.Country}}">
+      </div>
+      <div class="field">
+        <label for="province">State / province (ST)</label>
+        <input type="text" id="province" name="province" value="{{$d.Form.Province}}">
+      </div>
+      <div class="field">
+        <label for="locality">Locality (L)</label>
+        <input type="text" id="locality" name="locality" value="{{$d.Form.Locality}}">
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Key and validity</legend>
+    <div class="field-row">
+      <div class="field">
+        <label for="key_type">Key type</label>
+        <select id="key_type" name="key_type">
+          {{range keyTypes}}
+          <option value="{{.}}" {{if eq (printf "%s" .) $d.Form.KeyType}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+        <p class="hint">RSA-4096 for a long-lived root; EC P-256 is faster and smaller.</p>
+      </div>
+      <div class="field">
+        <label for="days">Validity (days)</label>
+        <input type="number" id="days" name="days" min="1" max="18250" value="{{$d.Form.Days}}">
+        <p class="hint">3650 = 10 years.</p>
+      </div>
+      <div class="field">
+        <label for="path_len">Path length</label>
+        <input type="number" id="path_len" name="path_len" min="0" max="10" value="{{$d.Form.PathLen}}">
+        <p class="hint">How many CA levels may sit below this one. 0 = leaf certificates only.</p>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>4. Distribution points (optional)</legend>
+    <div class="field">
+      <label for="crl_urls">CRL distribution points</label>
+      <input type="text" id="crl_urls" name="crl_urls" value="{{$d.Form.CRLURLs}}"
+             placeholder="{{.BaseURL}}/public/crl/acme-root-ca.crl">
+      <p class="hint">Comma separated. Embedded in every certificate this CA issues.</p>
+    </div>
+    <div class="field">
+      <label for="ocsp_urls">OCSP responders</label>
+      <input type="text" id="ocsp_urls" name="ocsp_urls" value="{{$d.Form.OCSPURLs}}">
+    </div>
+    <div class="field">
+      <label for="permitted_dns">Permitted DNS domains (name constraint)</label>
+      <input type="text" id="permitted_dns" name="permitted_dns" value="{{$d.Form.PermittedDNS}}"
+             placeholder="example.com, internal.lan">
+      <p class="hint">Restricts what this CA may ever issue for. Leave blank for no constraint.</p>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="make_default" value="1"
+             {{if $d.Form.MakeDefault}}checked{{end}}> Make this the default issuing authority</label>
+    </div>
+  </fieldset>
+
+  <div class="btn-row">
+    <button class="btn" type="submit">Create authority</button>
+    <a class="btn secondary" href="/cas">Cancel</a>
+  </div>
+</form>
+{{end}}

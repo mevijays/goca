@@ -1,0 +1,169 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Certificates</h1>
+    <p class="subtitle">{{$d.Total}} certificate{{if ne $d.Total 1}}s{{end}} matching your filter.
+       Every certificate issued here is searchable and re-downloadable.</p>
+  </div>
+  <a class="btn" href="/certificates/new">Request a certificate</a>
+</div>
+
+<form method="get" action="/certificates" class="card">
+  <div class="toolbar">
+    <div class="field grow">
+      <label for="q">Search</label>
+      <input type="search" id="q" name="q" value="{{$d.Filter.Query}}" data-autofocus
+             placeholder="common name, SAN, serial, fingerprint or requester">
+    </div>
+    <div class="field">
+      <label for="ca">Authority</label>
+      <select id="ca" name="ca">
+        <option value="">All</option>
+        {{range $d.CAs}}
+        <option value="{{.ID}}" {{if eq .ID $d.Filter.CAID}}selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="">Any</option>
+        <option value="active" {{if eq $d.Filter.Status "active"}}selected{{end}}>Active</option>
+        <option value="expired" {{if eq $d.Filter.Status "expired"}}selected{{end}}>Expired</option>
+        <option value="revoked" {{if eq $d.Filter.Status "revoked"}}selected{{end}}>Revoked</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="expiring">Expiring within</label>
+      <select id="expiring" name="expiring">
+        <option value="">Any time</option>
+        <option value="7" {{if eq $d.Filter.ExpiringIn 7}}selected{{end}}>7 days</option>
+        <option value="30" {{if eq $d.Filter.ExpiringIn 30}}selected{{end}}>30 days</option>
+        <option value="90" {{if eq $d.Filter.ExpiringIn 90}}selected{{end}}>90 days</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="sort">Sort by</label>
+      <select id="sort" name="sort">
+        <option value="created_at" {{if eq $d.Sort "created_at"}}selected{{end}}>Newest</option>
+        <option value="not_after" {{if eq $d.Sort "not_after"}}selected{{end}}>Expiry</option>
+        <option value="common_name" {{if eq $d.Sort "common_name"}}selected{{end}}>Common name</option>
+      </select>
+    </div>
+    <div class="field">
+      <button class="btn" type="submit">Filter</button>
+    </div>
+    {{if $d.Filtered}}
+    <div class="field"><a class="btn secondary" href="/certificates">Reset</a></div>
+    {{end}}
+  </div>
+</form>
+
+{{if $d.Certs}}
+<form method="post" action="/certificates/bulk" id="bulk-form">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<div class="card tight">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:28px"><input type="checkbox" data-select-all title="Select all"></th>
+          <th>Common name</th><th>SANs</th><th>Authority</th><th>Profile</th>
+          <th>Status</th><th>Expires</th><th>Requested by</th><th class="right">Download</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range $d.Certs}}
+        <tr>
+          <td><input type="checkbox" name="selected" value="{{.ID}}" data-row-select></td>
+          <td>
+            <a href="/certificates/{{.ID}}">{{.CommonName}}</a>
+            <div class="mono dim" style="font-size:11px">{{truncate 26 .SerialHex}}</div>
+          </td>
+          <td class="dim">{{truncate 44 .SANsDisplay}}</td>
+          <td class="dim">{{.CAName}}</td>
+          <td class="dim">{{.Profile}}</td>
+          <td>
+            <span class="badge {{statusClass .EffectiveStatus}}">{{.EffectiveStatus}}</span>
+            {{if .OnHold}}<span class="badge warn">on hold</span>{{end}}
+          </td>
+          <td class="nowrap"><span class="badge {{expiryClass .DaysLeft}}">{{fmtDate .NotAfter}}</span></td>
+          <td class="dim">{{.RequestedBy}}</td>
+          <td class="right nowrap">
+            <a class="btn small secondary" href="/certificates/{{.ID}}/download/cert.pem">Cert</a>
+            {{if .HasKey}}
+            <a class="btn small secondary" href="/certificates/{{.ID}}/download/key.pem">Key</a>
+            {{else}}
+            <span class="badge muted" title="Issued from a CSR; no key was stored">no key</span>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" data-bulk-bar hidden>
+  <div class="toolbar">
+    <div class="field">
+      <strong><span data-bulk-count>0</span> selected</strong>
+    </div>
+    <div class="field">
+      <label for="bulk_reason">Revocation reason</label>
+      <select id="bulk_reason" name="reason">
+        {{range reasonCodes}}
+        <option value="{{.}}">{{reasonName .}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div class="field">
+      <button class="btn danger" type="submit" name="action" value="revoke"
+              formnovalidate data-confirm-bulk="Revoke the selected certificates? This cannot be undone.">
+        Revoke selected
+      </button>
+    </div>
+    <div class="field">
+      <button class="btn secondary" type="submit" name="action" value="hold"
+              data-confirm-bulk="Put the selected certificates on hold?">Hold</button>
+    </div>
+    <div class="field">
+      <button class="btn secondary" type="submit" name="action" value="release"
+              data-confirm-bulk="Release the holds on the selected certificates?">Release</button>
+    </div>
+    <div class="field">
+      <button class="btn" type="submit" name="action" value="renew"
+              data-confirm-bulk="Renew the selected certificates? Each gets a new key and serial.">
+        Renew
+      </button>
+    </div>
+  </div>
+  <p class="hint">Renewing leaves the originals valid so you can deploy first; revoke them
+     afterwards, or use the renew option on a certificate's own page to do both at once.</p>
+</div>
+</form>
+
+{{if gt $d.Pages 1}}
+<div class="pagination">
+  {{if gt $d.Page 1}}<a href="{{$d.PageURL}}&page={{sub $d.Page 1}}">← Previous</a>{{end}}
+  <span class="current">Page {{$d.Page}} of {{$d.Pages}}</span>
+  {{if lt $d.Page $d.Pages}}<a href="{{$d.PageURL}}&page={{add $d.Page 1}}">Next →</a>{{end}}
+</div>
+{{end}}
+
+{{else}}
+<div class="card">
+  <div class="empty">
+    <h2>No certificates found</h2>
+    {{if $d.Filtered}}
+      <p>Nothing matches that filter.</p>
+      <a class="btn secondary" href="/certificates">Clear filters</a>
+    {{else}}
+      <p>Nothing has been issued yet.</p>
+      <a class="btn" href="/certificates/new">Request a certificate</a>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{end}}

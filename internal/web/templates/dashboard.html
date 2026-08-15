@@ -1,0 +1,124 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="subtitle">Signed in as {{.User.Username}} ({{.User.Role}}, {{.User.Source}})</p>
+  </div>
+  <div class="btn-row">
+    <a class="btn" href="/certificates/new">Request a certificate</a>
+    {{if .User.IsAdmin}}<a class="btn secondary" href="/cas/new">New authority</a>{{end}}
+  </div>
+</div>
+
+{{if not $d.HasCA}}
+<div class="card">
+  <div class="empty">
+    <h2>No certificate authority yet</h2>
+    <p>Create your root CA to start issuing certificates. The CA certificate and its
+       encrypted private key are stored in the SQLite database.</p>
+    {{if .User.IsAdmin}}
+    <a class="btn" href="/cas/new">Launch the CA wizard</a>
+    {{else}}
+    <p class="dim">Ask an administrator to create one.</p>
+    {{end}}
+  </div>
+</div>
+{{else}}
+
+<div class="grid stats" style="margin-bottom:18px">
+  <div class="stat"><div class="value">{{$d.Stats.CAs}}</div><div class="label">Authorities</div></div>
+  <div class="stat"><div class="value">{{$d.Stats.Certificates}}</div><div class="label">Certificates</div></div>
+  <div class="stat ok"><div class="value">{{$d.Stats.Active}}</div><div class="label">Active</div></div>
+  <div class="stat warn"><div class="value">{{$d.Stats.ExpiringSoon}}</div><div class="label">Expiring ≤30d</div></div>
+  <div class="stat"><div class="value">{{$d.Stats.Expired}}</div><div class="label">Expired</div></div>
+  <div class="stat danger"><div class="value">{{$d.Stats.Revoked}}</div><div class="label">Revoked</div></div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card tight">
+    <div class="card-head">
+      <h2>Authorities</h2>
+      <a href="/cas">View all</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Type</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+        {{range $d.CAs}}
+          <tr>
+            <td><a href="/cas/{{.ID}}">{{.Name}}</a>
+                {{if .IsDefault}}<span class="badge admin">default</span>{{end}}</td>
+            <td class="dim">{{if .IsRoot}}root{{else}}intermediate{{end}}</td>
+            <td><span class="badge {{expiryClass .DaysLeft}}">{{fmtDate .NotAfter}}</span></td>
+            <td class="right"><a class="btn small secondary"
+                href="/cas/{{.ID}}/download/ca.crt">Download</a></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card tight">
+    <div class="card-head">
+      <h2>Expiring soon</h2>
+      <a href="/certificates?expiring=30">View all</a>
+    </div>
+    {{if $d.Expiring}}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Common name</th><th>Expires</th><th class="num">Days</th></tr></thead>
+        <tbody>
+        {{range $d.Expiring}}
+          <tr>
+            <td><a href="/certificates/{{.ID}}">{{.CommonName}}</a></td>
+            <td class="dim nowrap">{{fmtDate .NotAfter}}</td>
+            <td class="num"><span class="badge {{expiryClass .DaysLeft}}">{{.DaysLeft}}</span></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <div class="empty"><p>Nothing expires in the next 30 days.</p></div>
+    {{end}}
+  </div>
+</div>
+
+<div class="card tight">
+  <div class="card-head">
+    <h2>Recently issued</h2>
+    <a href="/certificates">View all certificates</a>
+  </div>
+  {{if $d.Recent}}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Common name</th><th>Authority</th><th>Profile</th><th>Status</th>
+            <th>Expires</th><th>Requested by</th><th>Issued</th></tr>
+      </thead>
+      <tbody>
+      {{range $d.Recent}}
+        <tr>
+          <td><a href="/certificates/{{.ID}}">{{.CommonName}}</a></td>
+          <td class="dim">{{.CAName}}</td>
+          <td class="dim">{{.Profile}}</td>
+          <td><span class="badge {{statusClass .EffectiveStatus}}">{{.EffectiveStatus}}</span></td>
+          <td class="dim nowrap">{{fmtDate .NotAfter}}</td>
+          <td class="dim">{{.RequestedBy}}</td>
+          <td class="dim nowrap">{{since .CreatedAt}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty">
+    <p>No certificates issued yet.</p>
+    <a class="btn" href="/certificates/new">Request the first one</a>
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}

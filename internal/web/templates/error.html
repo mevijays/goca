@@ -1,0 +1,13 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="card">
+  <div class="empty">
+    <h2>{{$d.Title}}</h2>
+    <p>{{$d.Detail}}</p>
+    <div class="btn-row" style="justify-content:center">
+      <a class="btn secondary" href="/">Back to the dashboard</a>
+    </div>
+    <p class="dim" style="margin-top:16px">HTTP {{$d.Code}}</p>
+  </div>
+</div>
+{{end}}

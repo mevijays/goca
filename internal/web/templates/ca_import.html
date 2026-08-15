@@ -1,0 +1,189 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Connect an external CA</h1>
+    <p class="subtitle">Run goca underneath an authority you already operate — a pfSense CA,
+       a corporate root, an offline root.</p>
+  </div>
+  <a class="btn secondary" href="/cas">Cancel</a>
+</div>
+
+{{if $d.Error}}<div class="flash error">{{$d.Error}}</div>{{end}}
+
+{{if $d.Pending}}
+<div class="callout info">
+  <strong>Waiting for a signature:</strong>
+  {{range $d.Pending}}
+    <a href="/cas/{{.ID}}">{{.Name}}</a>
+  {{end}}
+  — open it to copy the request, or to import the certificate once it comes back.
+</div>
+{{end}}
+
+<form method="post" action="/cas/import" enctype="multipart/form-data" class="card">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+  <fieldset>
+    <legend>How do you want to connect it?</legend>
+    <div class="radio-cards">
+      <label class="radio-card">
+        <input type="radio" name="mode" value="request" {{if ne $d.Form.Mode "with-key"}}{{if ne $d.Form.Mode "anchor"}}checked{{end}}{{end}}>
+        <span class="rc-title">Generate a request here</span>
+        <div class="rc-desc">
+          goca creates the key, you get the CSR signed by your authority, then import the
+          result. The private key never leaves this server. <strong>Recommended.</strong>
+        </div>
+      </label>
+      <label class="radio-card">
+        <input type="radio" name="mode" value="with-key" {{if eq $d.Form.Mode "with-key"}}checked{{end}}>
+        <span class="rc-title">Import a CA and its key</span>
+        <div class="rc-desc">
+          You already created the intermediate elsewhere and can export the pair.
+          goca can issue from it immediately.
+        </div>
+      </label>
+      <label class="radio-card">
+        <input type="radio" name="mode" value="anchor" {{if eq $d.Form.Mode "anchor"}}checked{{end}}>
+        <span class="rc-title">Import a trust anchor</span>
+        <div class="rc-desc">
+          Certificate only, no key. Completes chains and is published for download,
+          but cannot sign anything.
+        </div>
+      </label>
+    </div>
+  </fieldset>
+
+  {{/* ---- mode: request ---- */}}
+  <fieldset data-mode="request">
+    <legend>Subject for the new subordinate CA</legend>
+    <div class="field">
+      <label for="name">Display name</label>
+      <input type="text" id="name" name="name" value="{{$d.Form.Name}}" placeholder="Branch Issuing CA">
+    </div>
+    <div class="field">
+      <label for="common_name">Common name (CN)</label>
+      <input type="text" id="common_name" name="common_name" value="{{$d.Form.CommonName}}"
+             placeholder="Branch Issuing CA">
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="organization">Organization (O)</label>
+        <input type="text" id="organization" name="organization" value="{{$d.Form.Organization}}">
+      </div>
+      <div class="field">
+        <label for="organizational_unit">Organizational unit (OU)</label>
+        <input type="text" id="organizational_unit" name="organizational_unit" value="{{$d.Form.OrganizationalUnit}}">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="country">Country (C)</label>
+        <input type="text" id="country" name="country" maxlength="2" value="{{$d.Form.Country}}">
+      </div>
+      <div class="field">
+        <label for="province">State / province (ST)</label>
+        <input type="text" id="province" name="province" value="{{$d.Form.Province}}">
+      </div>
+      <div class="field">
+        <label for="locality">Locality (L)</label>
+        <input type="text" id="locality" name="locality" value="{{$d.Form.Locality}}">
+      </div>
+    </div>
+    <div class="field">
+      <label for="key_type">Key type</label>
+      <select id="key_type" name="key_type">
+        {{range keyTypes}}
+        <option value="{{.}}" {{if eq (printf "%s" .) $d.Form.KeyType}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+      <p class="hint">The validity of the resulting CA is decided by the signing authority,
+         not here.</p>
+    </div>
+    <div class="callout info">
+      <strong>On pfSense:</strong> System → Cert. Manager → CAs → Add, choose
+      <em>Sign an intermediate Certificate Authority</em>, paste the request goca gives you,
+      pick the signing CA, then export the issued certificate and import it back here.
+    </div>
+  </fieldset>
+
+  {{/* ---- mode: with-key / anchor ---- */}}
+  <fieldset data-mode="with-key anchor" hidden>
+    <legend>The CA certificate</legend>
+    <div class="field">
+      <label for="name_import">Display name</label>
+      <input type="text" id="name_import" name="name" value="{{$d.Form.Name}}"
+             placeholder="Defaults to the certificate's common name">
+    </div>
+    <div class="field">
+      <label for="cert_file">Certificate file</label>
+      <input type="file" id="cert_file" name="cert_file" accept=".crt,.pem,.cer,.der">
+      <p class="hint">Or paste it below. If the file holds several certificates, the first is
+         the authority and the rest are treated as its chain.</p>
+    </div>
+    <div class="field">
+      <label for="cert_pem">Certificate (PEM)</label>
+      <textarea id="cert_pem" name="cert_pem" rows="8"
+                placeholder="-----BEGIN CERTIFICATE-----">{{$d.Form.CertPEM}}</textarea>
+    </div>
+  </fieldset>
+
+  <fieldset data-mode="with-key" hidden>
+    <legend>Its private key</legend>
+    <div class="field">
+      <label for="key_file">Private key file</label>
+      <input type="file" id="key_file" name="key_file" accept=".key,.pem">
+    </div>
+    <div class="field">
+      <label for="key_pem">Private key (PEM)</label>
+      <textarea id="key_pem" name="key_pem" rows="6"
+                placeholder="-----BEGIN PRIVATE KEY-----">{{$d.Form.KeyPEM}}</textarea>
+      <p class="hint">Verified against the certificate, then encrypted with the server master key.
+         Encrypted keys must be decrypted first:
+         <span class="mono">openssl pkcs8 -topk8 -nocrypt -in enc.key -out plain.key</span></p>
+    </div>
+  </fieldset>
+
+  <fieldset data-mode="with-key anchor" hidden>
+    <legend>Issuer chain (optional)</legend>
+    <div class="field">
+      <label for="chain_file">Chain file</label>
+      <input type="file" id="chain_file" name="chain_file" accept=".crt,.pem,.cer">
+    </div>
+    <div class="field">
+      <label for="chain_pem">Chain (PEM)</label>
+      <textarea id="chain_pem" name="chain_pem" rows="6"
+                placeholder="-----BEGIN CERTIFICATE-----">{{$d.Form.ChainPEM}}</textarea>
+      <p class="hint">The issuers above this certificate. Anything not already stored is
+         imported as a trust anchor, so chains resolve to a root.</p>
+    </div>
+    <div class="field" data-mode="with-key">
+      <label><input type="checkbox" name="make_default" value="1"
+             {{if $d.Form.MakeDefault}}checked{{end}}> Make this the default issuing authority</label>
+    </div>
+  </fieldset>
+
+  <div class="btn-row">
+    <button class="btn" type="submit">Continue</button>
+    <a class="btn secondary" href="/cas">Cancel</a>
+  </div>
+</form>
+
+<div class="card">
+  <h2>The same thing from the CLI</h2>
+  <div class="copy-wrap">
+    <pre class="pem" id="cli-equiv"># 1. generate the request here, key stays on this server
+goca ca request --name "Branch Issuing CA" --common-name "Branch Issuing CA" --out branch.csr
+
+# 2. sign branch.csr on pfSense, then bring the result back
+goca ca import-signed branch-issuing-ca --cert signed.crt --chain pfsense-root.crt
+
+# or, if you already have the intermediate and its key
+goca ca import --cert intermediate.crt --key intermediate.key --chain root.crt --default
+
+# or just the root, so chains resolve
+goca ca import --cert root.crt --name "pfSense Root CA"</pre>
+    <button class="copy-btn" data-copy="#cli-equiv" type="button">copy</button>
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,267 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$ca := $d.CA}}
+{{$info := $d.Info}}
+<div class="page-head">
+  <div>
+    <h1>{{$ca.Name}}
+      {{if $ca.IsDefault}}<span class="badge admin">default</span>{{end}}
+      <span class="badge {{statusClass $ca.Status}}">{{$ca.Status}}</span>
+      {{if $ca.External}}<span class="badge">imported</span>{{end}}
+      {{if not $ca.HasKey}}{{if not $ca.Pending}}<span class="badge warn">trust anchor</span>{{end}}{{end}}
+    </h1>
+    <p class="subtitle mono">{{$ca.Subject}}</p>
+  </div>
+  <div class="btn-row">
+    {{if $d.CanIssue}}<a class="btn" href="/certificates/new?ca={{$ca.ID}}">Issue from this CA</a>{{end}}
+    <a class="btn secondary" href="/cas">Back</a>
+  </div>
+</div>
+
+{{if not $d.CanIssue}}
+<div class="callout{{if $ca.Pending}} info{{end}}">
+  <strong>This authority cannot issue certificates:</strong> {{$d.IssueBlockedReason}}.
+</div>
+{{end}}
+
+{{if $ca.Pending}}
+{{/* ---------- awaiting an externally signed certificate ---------- */}}
+<div class="card">
+  <h2>Step 1 — send this request to your authority</h2>
+  <p class="hint" style="margin-top:0">
+    goca generated the key pair and holds the private key encrypted. Only this request leaves
+    the server. On pfSense: System → Cert. Manager → CAs → Add →
+    <em>Sign an intermediate Certificate Authority</em>.
+  </p>
+  <div class="copy-wrap">
+    <pre class="pem" id="pending-csr">{{$ca.CSRPEM}}</pre>
+    <button class="copy-btn" data-copy="#pending-csr" type="button">copy</button>
+  </div>
+  <div class="btn-row">
+    <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/request.csr">Download the CSR</a>
+  </div>
+</div>
+
+{{if .User.IsAdmin}}
+<div class="card">
+  <h2>Step 2 — import the signed certificate</h2>
+  <form method="post" action="/cas/{{$ca.ID}}/import-signed" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="field">
+      <label for="cert_file">Signed certificate</label>
+      <input type="file" id="cert_file" name="cert_file" accept=".crt,.pem,.cer">
+    </div>
+    <div class="field">
+      <label for="cert_pem">…or paste it (PEM)</label>
+      <textarea id="cert_pem" name="cert_pem" rows="8"
+                placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+      <p class="hint">Checked against the private key goca kept, so a certificate issued for a
+         different request is rejected rather than silently stored.</p>
+    </div>
+    <div class="field">
+      <label for="chain_file">The authority's own certificate / chain (recommended)</label>
+      <input type="file" id="chain_file" name="chain_file" accept=".crt,.pem,.cer">
+    </div>
+    <div class="field">
+      <label for="chain_pem">…or paste the chain (PEM)</label>
+      <textarea id="chain_pem" name="chain_pem" rows="6"
+                placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+      <p class="hint">Without it, goca cannot build a complete chain for what this CA issues.</p>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="make_default" value="1">
+        Make this the default issuing authority once activated</label>
+    </div>
+    <div class="btn-row">
+      <button class="btn" type="submit">Activate this authority</button>
+    </div>
+  </form>
+</div>
+{{end}}
+
+<div class="card">
+  <h2>Details</h2>
+  <dl class="dl">
+    <dt>Status</dt><dd>Pending — awaiting an externally signed certificate</dd>
+    <dt>Subject requested</dt><dd class="mono">{{$ca.Subject}}</dd>
+    <dt>Key type</dt><dd>{{$ca.KeyType}}</dd>
+    <dt>Private key</dt><dd>Generated and stored here, encrypted</dd>
+    <dt>Requested</dt><dd>{{fmtTime $ca.CreatedAt}}{{if $ca.CreatedBy}} by {{$ca.CreatedBy}}{{end}}</dd>
+    <dt>Slug</dt><dd class="mono">{{$ca.Slug}}</dd>
+  </dl>
+  {{if .User.IsAdmin}}
+  <form method="post" action="/cas/{{$ca.ID}}/delete" class="inline" style="margin-top:14px"
+        data-confirm="Discard the pending request {{$ca.Name}} and its key?">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button class="btn danger small" type="submit">Discard this request</button>
+  </form>
+  {{end}}
+</div>
+{{else}}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Details</h2>
+    <dl class="dl">
+      <dt>Type</dt><dd>{{$ca.Kind}}{{if $ca.IsRoot}} (self-signed){{end}}</dd>
+      <dt>Origin</dt>
+      <dd>{{if $ca.External}}Imported from an external authority{{else}}Created by goca{{end}}</dd>
+      <dt>Private key</dt>
+      <dd>{{if $ca.HasKey}}Stored, encrypted — this CA can sign{{else}}Not held — chain and download only{{end}}</dd>
+      {{if $d.Parent}}<dt>Issuer</dt><dd><a href="/cas/{{$d.Parent.ID}}">{{$d.Parent.Name}}</a></dd>
+      {{else if not $ca.IsRoot}}<dt>Issuer</dt>
+      <dd class="mono">{{$info.Issuer}} <span class="badge warn">not imported</span></dd>{{end}}
+      <dt>Chain</dt>
+      <dd>{{if $d.ChainComplete}}<span class="badge ok">complete to a root</span>
+          {{else}}<span class="badge warn">incomplete</span> — import the issuer as a trust anchor{{end}}</dd>
+      <dt>Serial</dt><dd class="mono">{{$ca.SerialHex}}</dd>
+      <dt>Key type</dt><dd>{{$ca.KeyType}}</dd>
+      <dt>Signature</dt><dd>{{$info.SignatureAlgorithm}}</dd>
+      <dt>Valid from</dt><dd>{{fmtTime $ca.NotBefore}}</dd>
+      <dt>Valid until</dt><dd>{{fmtTime $ca.NotAfter}}
+        <span class="badge {{expiryClass $ca.DaysLeft}}">{{$ca.DaysLeft}} days left</span></dd>
+      <dt>Path length</dt><dd>{{$ca.PathLen}}</dd>
+      <dt>SHA-256</dt><dd class="mono" style="font-size:11px">{{$ca.Fingerprint}}</dd>
+      <dt>Certificates issued</dt><dd>{{$d.IssuedCount}} ({{$d.RevokedCount}} revoked)</dd>
+      <dt>CRL number</dt><dd>{{$ca.CRLNumber}}{{if $ca.LastCRLAt}} · last generated {{fmtTimePtr $ca.LastCRLAt}}{{end}}</dd>
+      <dt>Created</dt><dd>{{fmtTime $ca.CreatedAt}}{{if $ca.CreatedBy}} by {{$ca.CreatedBy}}{{end}}</dd>
+      <dt>Slug</dt><dd class="mono">{{$ca.Slug}}</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Downloads</h2>
+    <div class="dl-links" style="margin-bottom:16px">
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/ca.crt">Certificate (.crt)</a>
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/ca.pem">Certificate (.pem)</a>
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/ca.der">Certificate (.der)</a>
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/chain.pem">Chain (.pem)</a>
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/crl.pem">CRL (.pem)</a>
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/crl.crl">CRL (.crl)</a>
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/bundle.zip">Everything (.zip)</a>
+      {{if $ca.CSRPEM}}
+      <a class="btn secondary small" href="/cas/{{$ca.ID}}/download/request.csr">Original CSR</a>
+      {{end}}
+      {{if .User.IsAdmin}}{{if $ca.HasKey}}
+      <a class="btn danger small" href="/cas/{{$ca.ID}}/download/ca.key"
+         onclick="return confirm('This downloads the CA private key in cleartext. Continue?')">Private key</a>
+      {{end}}{{end}}
+    </div>
+
+    <h3>Public distribution URLs</h3>
+    <div class="copy-wrap">
+      <pre class="pem" id="pub-urls">{{.BaseURL}}/public/ca/{{$ca.Slug}}.crt
+{{.BaseURL}}/public/crl/{{$ca.Slug}}.crl</pre>
+      <button class="copy-btn" data-copy="#pub-urls" type="button">copy</button>
+    </div>
+    <p class="hint">These two endpoints need no authentication, so servers and devices can
+       fetch the trust anchor and revocation list unattended.</p>
+
+    <h3 style="margin-top:18px">Install on Linux</h3>
+    <div class="copy-wrap">
+      <pre class="pem" id="install-cmd">sudo curl -fsSL {{.BaseURL}}/public/ca/{{$ca.Slug}}.crt \
+  -o /usr/local/share/ca-certificates/{{$ca.Slug}}.crt
+sudo update-ca-certificates</pre>
+      <button class="copy-btn" data-copy="#install-cmd" type="button">copy</button>
+    </div>
+  </div>
+</div>
+
+{{if .User.IsAdmin}}
+<div class="card">
+  <h2>Administration</h2>
+  <div class="btn-row">
+    <form method="post" action="/cas/{{$ca.ID}}/crl" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="btn secondary" type="submit">Generate CRL now</button>
+    </form>
+    {{if not $ca.IsDefault}}
+    <form method="post" action="/cas/{{$ca.ID}}/default" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="btn secondary" type="submit">Make default</button>
+    </form>
+    {{end}}
+    <form method="post" action="/cas/{{$ca.ID}}/status" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="status" value="{{if eq $ca.Status "active"}}disabled{{else}}active{{end}}">
+      <button class="btn secondary" type="submit">
+        {{if eq $ca.Status "active"}}Disable issuance{{else}}Re-enable issuance{{end}}
+      </button>
+    </form>
+    <form method="post" action="/cas/{{$ca.ID}}/delete" class="inline"
+          data-confirm="Delete {{$ca.Name}} and all {{$d.IssuedCount}} certificates it issued? This cannot be undone.">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="btn danger" type="submit">Delete authority</button>
+    </form>
+  </div>
+  <p class="hint">Deleting an authority also deletes every certificate it issued, including stored keys.
+     To retire one while keeping the record, revoke it instead.</p>
+
+  <h3 style="margin-top:20px">Retire this authority</h3>
+  <form method="post" action="/cas/{{$ca.ID}}/revoke"
+        data-confirm="Retire {{$ca.Name}}? Issuance stops immediately.">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="toolbar">
+      <div class="field">
+        <label for="ca_reason">Reason</label>
+        <select id="ca_reason" name="reason">
+          {{range reasonCodes}}
+          <option value="{{.}}" {{if eq . 5}}selected{{end}}>{{reasonName .}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" name="cascade" value="1">
+          Also revoke its {{$d.IssuedCount}} certificate(s) and any subordinates</label>
+      </div>
+      <div class="field"><button class="btn danger" type="submit">Retire authority</button></div>
+    </div>
+    <p class="hint">
+      Issuance is disabled straight away.
+      {{if $d.Parent}}Because goca holds its issuer ({{$d.Parent.Name}}), this authority is
+        also added to that CRL, which is what relying parties can actually observe.
+      {{else if $ca.IsRoot}}This is a root: nothing can revoke it, so remove it from your
+        trust stores as well.
+      {{else}}goca does not hold this authority's issuer, so revoke it on the external
+        authority too.{{end}}
+    </p>
+  </form>
+</div>
+{{end}}
+
+<div class="card">
+  <div class="page-head" style="margin-bottom:12px">
+    <h2>Certificates issued by this authority</h2>
+    <a href="/certificates?ca={{$ca.ID}}">View all {{$d.IssuedCount}}</a>
+  </div>
+  {{if $d.Certs}}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Common name</th><th>Profile</th><th>Status</th><th>Expires</th><th>Requested by</th></tr></thead>
+      <tbody>
+      {{range $d.Certs}}
+        <tr>
+          <td><a href="/certificates/{{.ID}}">{{.CommonName}}</a></td>
+          <td class="dim">{{.Profile}}</td>
+          <td><span class="badge {{statusClass .EffectiveStatus}}">{{.EffectiveStatus}}</span></td>
+          <td class="dim nowrap">{{fmtDate .NotAfter}}</td>
+          <td class="dim">{{.RequestedBy}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty"><p>This authority has not issued any certificates yet.</p></div>
+  {{end}}
+</div>
+
+<div class="card">
+  <h2>Certificate (PEM)</h2>
+  <div class="copy-wrap">
+    <pre class="pem" id="ca-pem">{{$ca.CertPEM}}</pre>
+    <button class="copy-btn" data-copy="#ca-pem" type="button">copy</button>
+  </div>
+</div>
+{{end}}{{/* end of the non-pending branch */}}
+{{end}}

@@ -1,0 +1,34 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Audit log</h1>
+    <p class="subtitle">Every issuance, revocation, CA change and sign-in attempt</p>
+  </div>
+</div>
+
+{{if $d.Entries}}
+<div class="card tight">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th><th>From</th></tr></thead>
+      <tbody>
+      {{range $d.Entries}}
+        <tr>
+          <td class="dim nowrap">{{fmtTime .TS}}</td>
+          <td>{{.Actor}}</td>
+          <td><span class="badge {{if contains .Action "revoke"}}danger{{else if contains .Action "failed"}}warn{{end}}">{{.Action}}</span></td>
+          <td class="mono">{{truncate 40 .Target}}</td>
+          <td class="dim mono" style="font-size:11px">{{truncate 70 .Detail}}</td>
+          <td class="dim mono">{{.IP}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+<p class="hint">Showing the {{len $d.Entries}} most recent entries.</p>
+{{else}}
+<div class="card"><div class="empty"><p>No audit entries yet.</p></div></div>
+{{end}}
+{{end}}

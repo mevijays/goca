@@ -1,0 +1,79 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="page-head">
+  <div>
+    <h1>Certificate authorities</h1>
+    <p class="subtitle">Roots and intermediates managed by this server</p>
+  </div>
+  {{if .User.IsAdmin}}
+  <div class="btn-row">
+    <a class="btn" href="/cas/new">New authority</a>
+    <a class="btn secondary" href="/cas/import">Connect an external CA</a>
+  </div>
+  {{end}}
+</div>
+
+{{if $d.Pending}}
+<div class="callout info">
+  <strong>Waiting for an external signature:</strong>
+  {{range $d.Pending}}<a href="/cas/{{.ID}}">{{.Name}}</a> {{end}}
+  — open it to copy the request, or to import the certificate once your authority signs it.
+</div>
+{{end}}
+
+{{if $d.CAs}}
+<div class="card tight">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th><th>Subject</th><th>Kind</th><th>Origin</th><th>Key</th>
+          <th>Valid until</th><th>Status</th><th>Issued</th><th class="right">Files</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range $d.CAs}}
+        <tr>
+          <td>
+            <a href="/cas/{{.ID}}">{{.Name}}</a>
+            {{if .IsDefault}}<span class="badge admin">default</span>{{end}}
+          </td>
+          <td class="dim mono">{{truncate 46 .Subject}}</td>
+          <td class="dim">{{.Kind}}</td>
+          <td class="dim">{{.Origin}}</td>
+          <td class="dim">{{if .HasKey}}{{.KeyType}}{{else}}<span title="No private key held">none</span>{{end}}</td>
+          <td>{{if .Pending}}<span class="dim">—</span>
+              {{else}}<span class="badge {{expiryClass .DaysLeft}}">{{fmtDate .NotAfter}}</span>{{end}}</td>
+          <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
+          <td class="num dim">{{index $d.Counts .ID}}</td>
+          <td class="right nowrap">
+            {{if .Pending}}
+            <a class="btn small" href="/cas/{{.ID}}">Import signed cert</a>
+            {{else}}
+            <a class="btn small secondary" href="/cas/{{.ID}}/download/ca.crt">Cert</a>
+            <a class="btn small secondary" href="/cas/{{.ID}}/download/chain.pem">Chain</a>
+            <a class="btn small secondary" href="/cas/{{.ID}}/download/crl.pem">CRL</a>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="callout info">
+  Machines can fetch the trust anchor without signing in:
+  <span class="mono">{{.BaseURL}}/public/ca/&lt;slug&gt;.crt</span> and
+  <span class="mono">{{.BaseURL}}/public/crl/&lt;slug&gt;.crl</span>
+</div>
+{{else}}
+<div class="card">
+  <div class="empty">
+    <h2>No authorities yet</h2>
+    <p>Create a root CA to begin. You can add intermediates under it afterwards.</p>
+    {{if .User.IsAdmin}}<a class="btn" href="/cas/new">Launch the CA wizard</a>{{end}}
+  </div>
+</div>
+{{end}}
+{{end}}

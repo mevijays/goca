@@ -1,0 +1,233 @@
+{{define "content"}}
+{{$d := .Data}}
+{{$c := $d.Cert}}
+{{$info := $d.Info}}
+<div class="page-head">
+  <div>
+    <h1>{{$c.CommonName}}
+      <span class="badge {{statusClass $c.EffectiveStatus}}">{{$c.EffectiveStatus}}</span>
+    </h1>
+    <p class="subtitle mono">{{$c.Subject}}</p>
+  </div>
+  <a class="btn secondary" href="/certificates">Back to list</a>
+</div>
+
+{{if $d.NewKey}}
+<div class="secret-box">
+  <strong>Private key generated.</strong> It is stored encrypted and can be downloaded again
+  from this page at any time.
+  <div class="copy-wrap" style="margin-top:10px">
+    <pre class="pem" id="new-key">{{$d.NewKey}}</pre>
+    <button class="copy-btn" data-copy="#new-key" type="button">copy</button>
+  </div>
+</div>
+{{end}}
+{{if $d.NewKeyNotStored}}
+<div class="callout danger">
+  <strong>Download this key now.</strong> You asked goca not to store it, so this is the only
+  time it will be shown.
+  <div class="copy-wrap" style="margin-top:10px">
+    <pre class="pem" id="new-key-once">{{$d.NewKeyNotStored}}</pre>
+    <button class="copy-btn" data-copy="#new-key-once" type="button">copy</button>
+  </div>
+</div>
+{{end}}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Certificate</h2>
+    <dl class="dl">
+      <dt>Serial</dt><dd class="mono">{{$c.SerialHex}}</dd>
+      <dt>Issuing authority</dt><dd><a href="/cas/{{$c.CAID}}">{{$c.CAName}}</a></dd>
+      <dt>Subject alt names</dt>
+      <dd>{{if $c.SANs}}{{range $c.SANs}}<div class="mono">{{.}}</div>{{end}}{{else}}<span class="dim">none</span>{{end}}</dd>
+      <dt>Profile</dt><dd>{{$c.Profile}} <span class="dim">— {{profileDesc $d.ProfileEnum}}</span></dd>
+      <dt>Key usage</dt><dd class="dim">{{join $info.KeyUsage ", "}}</dd>
+      <dt>Extended key usage</dt><dd class="dim">{{join $info.ExtKeyUsage ", "}}</dd>
+      <dt>Key type</dt><dd>{{$c.KeyType}}</dd>
+      <dt>Signature</dt><dd>{{$info.SignatureAlgorithm}}</dd>
+      <dt>Valid from</dt><dd>{{fmtTime $c.NotBefore}}</dd>
+      <dt>Valid until</dt><dd>{{fmtTime $c.NotAfter}}
+        <span class="badge {{expiryClass $c.DaysLeft}}">{{$c.DaysLeft}} days left</span></dd>
+      <dt>SHA-256</dt><dd class="mono" style="font-size:11px">{{$c.Fingerprint}}</dd>
+      <dt>Requested by</dt><dd>{{if $c.RequestedBy}}{{$c.RequestedBy}}{{else}}<span class="dim">unknown</span>{{end}}</dd>
+      <dt>Issued</dt><dd>{{fmtTime $c.CreatedAt}}</dd>
+      {{if $c.Note}}<dt>Note</dt><dd>{{$c.Note}}</dd>{{end}}
+      {{if eq $c.Status "revoked"}}
+      <dt>Revoked</dt><dd class="badge danger">{{fmtTimePtr $c.RevokedAt}} — {{reasonName $c.RevokeCode}}</dd>
+      {{end}}
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Downloads</h2>
+    <div class="dl-links">
+      <a class="btn secondary small" href="/certificates/{{$c.ID}}/download/cert.pem">Certificate (.pem)</a>
+      <a class="btn secondary small" href="/certificates/{{$c.ID}}/download/cert.crt">Certificate (.crt)</a>
+      <a class="btn secondary small" href="/certificates/{{$c.ID}}/download/cert.der">Certificate (.der)</a>
+      <a class="btn secondary small" href="/certificates/{{$c.ID}}/download/chain.pem">CA chain (.pem)</a>
+      <a class="btn secondary small" href="/certificates/{{$c.ID}}/download/fullchain.pem">Full chain (.pem)</a>
+      {{if $c.CSRPEM}}<a class="btn secondary small" href="/certificates/{{$c.ID}}/download/request.csr">CSR</a>{{end}}
+      {{if $c.HasKey}}
+      <a class="btn small" href="/certificates/{{$c.ID}}/download/key.pem">Private key (.pem)</a>
+      <a class="btn secondary small" href="/certificates/{{$c.ID}}/download/bundle.zip">Everything (.zip)</a>
+      {{end}}
+    </div>
+
+    {{if $c.HasKey}}
+    <h3 style="margin-top:18px">PKCS#12 bundle</h3>
+    <form method="get" action="/certificates/{{$c.ID}}/download/bundle.p12">
+      <div class="toolbar">
+        <div class="field grow">
+          <label for="p12pass">Export password</label>
+          <input type="password" id="p12pass" name="password" placeholder="Protects the .p12 file">
+        </div>
+        <div class="field"><button class="btn secondary" type="submit">Download .p12</button></div>
+      </div>
+      <p class="hint">For browsers, mobile devices and Windows certificate stores.</p>
+    </form>
+    {{else}}
+    <div class="callout" style="margin-top:14px">
+      No private key is stored for this certificate — it was issued from a CSR you supplied,
+      or key storage was turned off. The certificate itself remains downloadable forever.
+    </div>
+    {{end}}
+
+    <h3 style="margin-top:18px">Verify</h3>
+    <div class="copy-wrap">
+      <pre class="pem" id="verify-cmd">openssl verify -CAfile chain.pem cert.pem
+openssl x509 -in cert.pem -noout -text</pre>
+      <button class="copy-btn" data-copy="#verify-cmd" type="button">copy</button>
+    </div>
+  </div>
+</div>
+
+{{if $d.History}}
+<div class="card tight">
+  <div class="card-head">
+    <h2>Rotation history</h2>
+    <span class="dim">{{len $d.History}} certificate(s) in this chain</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th></th><th>Serial</th><th>Issued</th><th>Expires</th><th>Status</th><th>Key</th></tr></thead>
+      <tbody>
+      {{range $d.History}}
+        <tr>
+          <td>{{if eq .ID $c.ID}}<span class="badge admin">this one</span>{{end}}</td>
+          <td class="mono"><a href="/certificates/{{.ID}}">{{truncate 24 .SerialHex}}</a></td>
+          <td class="dim nowrap">{{fmtDate .CreatedAt}}</td>
+          <td class="dim nowrap">{{fmtDate .NotAfter}}</td>
+          <td><span class="badge {{statusClass .EffectiveStatus}}">{{.EffectiveStatus}}</span></td>
+          <td class="dim">{{if .HasKey}}stored{{else}}—{{end}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
+
+{{if ne $c.Status "revoked"}}
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Renew</h2>
+    <p class="hint" style="margin-top:0">
+      Issues a replacement with the same subject and SANs. A new key is generated by default,
+      which is the point of rotating — it retires the old key along with the old certificate.
+    </p>
+    <form method="post" action="/certificates/{{$c.ID}}/renew">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="field-row">
+        <div class="field">
+          <label for="renew_days">Validity (days)</label>
+          <input type="number" id="renew_days" name="days" min="1" max="7300"
+                 placeholder="{{$d.RenewDays}}" value="{{$d.RenewDays}}">
+          <p class="hint">Defaults to the same span as this certificate.</p>
+        </div>
+      </div>
+      {{if $c.HasKey}}
+      <div class="field">
+        <label><input type="checkbox" name="same_key" value="1"> Reuse the existing private key</label>
+        <p class="hint">Only when the key is pinned somewhere. A compromised key stays in play.</p>
+      </div>
+      {{end}}
+      <div class="field">
+        <label><input type="checkbox" name="revoke_old" value="1">
+          Revoke this certificate as superseded once the replacement exists</label>
+        <p class="hint">Leave unchecked to deploy the new one first, then revoke by hand.</p>
+      </div>
+      <button class="btn" type="submit">Renew certificate</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Revoke</h2>
+    <form method="post" action="/certificates/{{$c.ID}}/revoke"
+          data-confirm="Revoke {{$c.CommonName}}? This cannot be undone.">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="field">
+        <label for="reason">Reason</label>
+        <select id="reason" name="reason">
+          {{range reasonCodes}}
+          <option value="{{.}}">{{reasonName .}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="btn danger" type="submit">Revoke permanently</button>
+      </div>
+      <p class="hint">The certificate appears in this authority's next CRL. Regenerate the CRL
+         from the authority page to publish it immediately.</p>
+    </form>
+
+    <h3 style="margin-top:20px">Or suspend it</h3>
+    <form method="post" action="/certificates/{{$c.ID}}/hold"
+          data-confirm="Put {{$c.CommonName}} on hold?">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="btn secondary" type="submit">Place on hold</button>
+      <p class="hint">A hold appears on the CRL exactly like a revocation, but can be lifted.
+         Use it while you are still investigating.</p>
+    </form>
+  </div>
+</div>
+{{else if $c.OnHold}}
+<div class="card">
+  <h2>This certificate is on hold</h2>
+  <p>It appears on the CRL as <span class="mono">certificateHold</span>, which relying parties
+     treat as revoked. Unlike other reasons, this one can be lifted.</p>
+  <form method="post" action="/certificates/{{$c.ID}}/release">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button class="btn" type="submit">Release the hold</button>
+    <p class="hint">Regenerate the authority's CRL afterwards to publish the change.</p>
+  </form>
+</div>
+{{else}}
+<div class="card">
+  <h2>Revoked</h2>
+  <p>Revoked {{fmtTimePtr $c.RevokedAt}} as <strong>{{reasonName $c.RevokeCode}}</strong>.
+     This is permanent and cannot be lifted.</p>
+  <div class="btn-row">
+    <a class="btn secondary" href="/certificates/new?ca={{$c.CAID}}">Request a replacement</a>
+  </div>
+</div>
+{{end}}
+
+<div class="card">
+  <h2>Certificate (PEM)</h2>
+  <div class="copy-wrap">
+    <pre class="pem" id="cert-pem">{{$c.CertPEM}}</pre>
+    <button class="copy-btn" data-copy="#cert-pem" type="button">copy</button>
+  </div>
+</div>
+
+{{if $c.CSRPEM}}
+<div class="card">
+  <h2>Original CSR</h2>
+  <div class="copy-wrap">
+    <pre class="pem" id="csr-pem">{{$c.CSRPEM}}</pre>
+    <button class="copy-btn" data-copy="#csr-pem" type="button">copy</button>
+  </div>
+</div>
+{{end}}
+{{end}}
