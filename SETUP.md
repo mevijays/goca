@@ -14,6 +14,7 @@ an existing install. For day-to-day CLI usage once you're running, see
 - [Unattended setup](#unattended-setup)
 - [What setup produces](#what-setup-produces)
 - [The config file](#the-config-file)
+- [Database](#database)
 - [Running the portal](#running-the-portal)
 - [Installing as a service](#installing-as-a-service)
 - [TLS](#tls)
@@ -30,13 +31,14 @@ an existing install. For day-to-day CLI usage once you're running, see
 
 ## Requirements
 
-- **To build:** Go 1.22 or later. No other build-time dependencies — SQLite is
-  the pure-Go `modernc.org/sqlite` driver, so there's no cgo, no libc pinning,
-  and nothing else to install.
-- **To run:** nothing. The binary is self-contained — the web UI (HTML/CSS/JS)
-  is compiled in with `go:embed`, and the database is a single SQLite file.
-- **Disk:** trivial. A database with thousands of certificates and their keys
-  is typically a few tens of megabytes.
+- **To build:** Go 1.22 or later. No other build-time dependencies — both database
+  drivers are pure Go (`modernc.org/sqlite` and `jackc/pgx`), so there's no cgo,
+  no libc pinning, and nothing else to install.
+- **To run:** nothing beyond the binary and, if you choose PostgreSQL, a reachable
+  server. By default the database is a single SQLite file next to the binary; the
+  web UI (HTML/CSS/JS) is compiled in with `go:embed` either way.
+- **Disk:** trivial. A SQLite database with thousands of certificates and their
+  keys is typically a few tens of megabytes.
 - **Network:** the portal needs an open TCP port (8080 by default). LDAP, if
   used, needs outbound access to your directory server (389/636 typically).
 
@@ -128,6 +130,18 @@ prompting entirely — anything not given a flag falls back to its default.
 | `--admin-user` | `admin` | local administrator username |
 | `--admin-password` | *(generated)* | local administrator password |
 
+**Database** (PostgreSQL flags only matter when `--database-driver postgres`; see [Database](#database))
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--database-driver` | `sqlite` | storage backend: `sqlite` or `postgres` |
+| `--db-host` | — | PostgreSQL host (required for `postgres`) |
+| `--db-port` | `5432` | PostgreSQL port |
+| `--db-name` | `goca` | PostgreSQL database name |
+| `--db-user` | `goca` | PostgreSQL user |
+| `--db-password` | — | PostgreSQL password (encrypted in the config) |
+| `--db-sslmode` | `require` | `disable`, `require`, `verify-ca`, or `verify-full` |
+
 **LDAP** (only matters when `--ldap` is set or `--auth-mode` is `ldap`/`both`)
 
 | Flag | Default | Meaning |
@@ -184,7 +198,8 @@ With LDAP, a fully unattended example:
 1. **`config.yaml`**, mode `0600`, holding server settings, the master and
    session encryption keys, the local admin's bcrypt hash, and (if
    configured) the LDAP settings with the bind password encrypted.
-2. **A SQLite database** (`goca.db` by default) with its schema created.
+2. **A database** with its schema created — a SQLite file (`goca.db` by
+   default) unless PostgreSQL was chosen, see [Database](#database).
 3. **A local administrator account**, mirrored from the config into the
    database.
 4. **Optionally, a first certificate authority**, if `--with-ca` was passed or
@@ -198,7 +213,11 @@ existing file.
 
 ```yaml
 data_dir: /var/lib/goca
-db_path: /var/lib/goca/goca.db
+db_path: /var/lib/goca/goca.db          # used only when database.driver is sqlite
+database:
+  driver: sqlite                        # sqlite (default) | postgres
+  # host, port, name, user, password, sslmode are set here when driver: postgres
+  # (see Database below); password is encrypted with master_key, like bind_password.
 server:
   listen: 0.0.0.0
   port: 8080
@@ -269,6 +288,43 @@ still read certificates from the database, but every encrypted private key
 becomes permanently unrecoverable. Back up `config.yaml` and `goca.db`
 together, and protect the config file at least as carefully as you'd protect
 a private key directly — mode `0600` is the floor, not the ceiling.
+
+## Database
+
+goca defaults to SQLite: a single file, no server to run, no configuration
+beyond a path. `goca setup` picks this unless told otherwise.
+
+For a server-based database instead, choose PostgreSQL — during the wizard
+(`Database backend` prompt), or non-interactively:
+
+```bash
+goca setup --non-interactive \
+    --database-driver postgres \
+    --db-host db.example.com --db-port 5432 \
+    --db-name goca --db-user goca --db-password 'S3cret!!' \
+    --db-sslmode require \
+    --admin-user admin --admin-password 'S3cret!!'
+```
+
+Key points:
+
+- The database and its schema are created (and, on upgrade, migrated) the same
+  way for both backends — there's nothing to run by hand against PostgreSQL
+  first beyond having an empty database and a user with rights to it.
+- `--db-sslmode` accepts `disable`, `require` (the default), `verify-ca` or
+  `verify-full`; use `disable` only for a database on localhost or a private
+  network you trust.
+- The PostgreSQL password is encrypted with `security.master_key` before being
+  written to `config.yaml`, exactly like the LDAP bind password
+  (`enc:v1:...` prefix). A hand-edited plaintext password is still accepted,
+  and gets encrypted in place the next time goca writes the file.
+- Switching backends is not a live migration: pick one at setup time. Moving
+  an existing SQLite install to PostgreSQL means re-issuing/re-importing into
+  a freshly set-up PostgreSQL-backed instance; there is no `goca` command that
+  copies data between the two today.
+- [docker-compose.yaml](docker-compose.yaml) ships an optional PostgreSQL
+  service behind the `postgres` profile — see the comments at the top of that
+  file.
 
 ## Running the portal
 
@@ -457,7 +513,11 @@ to run.
 
 ## Backup and disaster recovery
 
-Back up two files together, as a pair — one without the other is useless:
+Back up the database together with `config.yaml` — one without the other is
+useless, since `config.yaml` holds the master key that decrypts every private
+key the database stores.
+
+**SQLite:**
 
 - `goca.db` — every CA, certificate, user, and (if retained) encrypted
   private key.
@@ -470,6 +530,12 @@ file (and any `.db-wal` / `.db-shm` alongside it, if present) directly.
 To restore: put both files back in place, matching the paths `--data-dir` /
 `--out` originally used (or point `--config` at wherever you put them), and
 start the portal. No explicit migration or repair step is needed.
+
+**PostgreSQL:** back it up the way you back up any PostgreSQL database
+(`pg_dump`/`pg_basebackup`, or your platform's managed snapshotting), together
+with `config.yaml`. To restore, recreate the database from that backup and
+point a matching `config.yaml` (same `database:` block, same `master_key`) at
+it.
 
 ## Uninstalling
 

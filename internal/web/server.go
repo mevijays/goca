@@ -254,7 +254,7 @@ func (s *Server) Run(ctx context.Context, opts Options) error {
 	}
 	s.log.Info("goca web portal listening",
 		"url", fmt.Sprintf("%s://%s:%d", scheme, display, port),
-		"database", s.cfg.DBPath,
+		"database", s.cfg.DatabaseSummary(),
 		"auth", string(s.cfg.Auth.Mode))
 
 	errCh := make(chan error, 1)

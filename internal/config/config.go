@@ -25,10 +25,48 @@ type Config struct {
 
 	DataDir  string         `yaml:"data_dir"`
 	DBPath   string         `yaml:"db_path"`
+	Database DatabaseConfig `yaml:"database"`
 	Server   ServerConfig   `yaml:"server"`
 	Security SecurityConfig `yaml:"security"`
 	Auth     AuthConfig     `yaml:"auth"`
 	CA       CAConfig       `yaml:"ca"`
+}
+
+// DatabaseDriver selects which backend the store package opens.
+type DatabaseDriver string
+
+const (
+	DBDriverSQLite   DatabaseDriver = "sqlite"
+	DBDriverPostgres DatabaseDriver = "postgres"
+)
+
+// DatabaseConfig selects and configures the storage backend. The zero value
+// means SQLite at DBPath, which keeps every existing config file and test
+// working unchanged.
+type DatabaseConfig struct {
+	Driver DatabaseDriver `yaml:"driver"`
+
+	// PostgreSQL connection details; ignored for the sqlite driver.
+	Host     string `yaml:"host,omitempty"`
+	Port     int    `yaml:"port,omitempty"`
+	Name     string `yaml:"name,omitempty"`
+	User     string `yaml:"user,omitempty"`
+	Password string `yaml:"password,omitempty"` // encrypted with the master key, like the LDAP bind password
+	SSLMode  string `yaml:"sslmode,omitempty"`  // disable|require|verify-ca|verify-full
+}
+
+// IsPostgres reports whether the configured backend is PostgreSQL.
+func (d DatabaseConfig) IsPostgres() bool { return d.Driver == DBDriverPostgres }
+
+// DatabaseSummary describes the active storage backend for display - the
+// SQLite file path, or a PostgreSQL connection summary with the password
+// never included.
+func (c *Config) DatabaseSummary() string {
+	if !c.Database.IsPostgres() {
+		return c.DBPath
+	}
+	d := c.Database
+	return fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=%s", d.User, d.Host, d.Port, d.Name, d.SSLMode)
 }
 
 // ServerConfig controls the embedded web server.
@@ -130,8 +168,9 @@ type CAConfig struct {
 func Default() *Config {
 	dataDir := DefaultDataDir()
 	return &Config{
-		DataDir: dataDir,
-		DBPath:  filepath.Join(dataDir, "goca.db"),
+		DataDir:  dataDir,
+		DBPath:   filepath.Join(dataDir, "goca.db"),
+		Database: DatabaseConfig{Driver: DBDriverSQLite},
 		Server: ServerConfig{
 			Listen:  "0.0.0.0",
 			Port:    8080,
@@ -265,6 +304,28 @@ func (c *Config) Validate() error {
 	}
 	if c.DBPath == "" {
 		c.DBPath = filepath.Join(c.DataDir, "goca.db")
+	}
+	switch c.Database.Driver {
+	case "", DBDriverSQLite:
+		c.Database.Driver = DBDriverSQLite
+	case DBDriverPostgres:
+		if c.Database.Host == "" {
+			return errors.New("database.host is required when database.driver is postgres")
+		}
+		if c.Database.Name == "" {
+			return errors.New("database.name is required when database.driver is postgres")
+		}
+		if c.Database.User == "" {
+			return errors.New("database.user is required when database.driver is postgres")
+		}
+		if c.Database.Port == 0 {
+			c.Database.Port = 5432
+		}
+		if c.Database.SSLMode == "" {
+			c.Database.SSLMode = "require"
+		}
+	default:
+		return fmt.Errorf("database.driver %q must be sqlite or postgres", c.Database.Driver)
 	}
 	if c.Security.MasterKey == "" {
 		return errors.New("security.master_key is missing; re-run `goca setup`")

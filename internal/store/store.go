@@ -223,6 +223,207 @@ CREATE TABLE IF NOT EXISTS acme_challenges (
 CREATE INDEX IF NOT EXISTS idx_acme_challenges_authz ON acme_challenges(authorization_id);
 `
 
+// schemaPostgres is the PostgreSQL equivalent of schema above. The two are
+// kept in lockstep by hand: same tables, same columns, same order, differing
+// only where the dialects require it -
+//
+//   - INTEGER PRIMARY KEY AUTOINCREMENT -> BIGSERIAL PRIMARY KEY
+//   - TIMESTAMP -> TIMESTAMPTZ, so a value keeps meaning a specific instant
+//     regardless of the server's session time zone
+//   - no PRAGMA lines; PostgreSQL manages concurrency and foreign keys itself
+//
+// "Boolean" columns (is_root, is_default, disabled, revoked, wildcard, ...)
+// stay INTEGER on purpose: store.go and acme.go's query text already embeds
+// literal comparisons like "is_default = 0" and "revoked = 1" that both
+// dialects need to accept identically, and normalizeBoolArgs in pgrebind.go
+// converts Go bool parameters to match. See its doc comment for the full
+// reasoning.
+const schemaPostgres = `
+CREATE TABLE IF NOT EXISTS cas (
+  id            BIGSERIAL PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,
+  slug          TEXT NOT NULL UNIQUE,
+  subject       TEXT NOT NULL,
+  subject_json  TEXT NOT NULL DEFAULT '{}',
+  serial_hex    TEXT NOT NULL,
+  key_type      TEXT NOT NULL,
+  cert_pem      TEXT NOT NULL,
+  key_enc       TEXT NOT NULL,
+  is_root       INTEGER NOT NULL DEFAULT 1,
+  parent_id     BIGINT REFERENCES cas(id),
+  path_len      INTEGER NOT NULL DEFAULT 0,
+  not_before    TIMESTAMPTZ NOT NULL,
+  not_after     TIMESTAMPTZ NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active',
+  crl_number    INTEGER NOT NULL DEFAULT 0,
+  fingerprint   TEXT NOT NULL DEFAULT '',
+  is_default    INTEGER NOT NULL DEFAULT 0,
+  created_by    TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL,
+  last_crl_at   TIMESTAMPTZ,
+  csr_pem       TEXT NOT NULL DEFAULT '',
+  external      INTEGER NOT NULL DEFAULT 0,
+  subject_key_id TEXT NOT NULL DEFAULT '',
+  authority_key_id TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS certificates (
+  id            BIGSERIAL PRIMARY KEY,
+  ca_id         BIGINT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+  serial_hex    TEXT NOT NULL,
+  common_name   TEXT NOT NULL,
+  subject       TEXT NOT NULL,
+  sans_json     TEXT NOT NULL DEFAULT '[]',
+  profile       TEXT NOT NULL DEFAULT 'server',
+  key_type      TEXT NOT NULL DEFAULT '',
+  cert_pem      TEXT NOT NULL,
+  key_enc       TEXT NOT NULL DEFAULT '',
+  csr_pem       TEXT NOT NULL DEFAULT '',
+  fingerprint   TEXT NOT NULL DEFAULT '',
+  not_before    TIMESTAMPTZ NOT NULL,
+  not_after     TIMESTAMPTZ NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active',
+  revoked_at    TIMESTAMPTZ,
+  revoke_code   INTEGER NOT NULL DEFAULT 0,
+  requested_by  TEXT NOT NULL DEFAULT '',
+  note          TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL,
+  renewed_from  BIGINT,
+  UNIQUE(ca_id, serial_hex)
+);
+CREATE INDEX IF NOT EXISTS idx_cert_cn ON certificates(common_name);
+CREATE INDEX IF NOT EXISTS idx_cert_serial ON certificates(serial_hex);
+CREATE INDEX IF NOT EXISTS idx_cert_status ON certificates(status);
+CREATE INDEX IF NOT EXISTS idx_cert_requested_by ON certificates(requested_by);
+
+CREATE TABLE IF NOT EXISTS ca_revocations (
+  id         BIGSERIAL PRIMARY KEY,
+  ca_id      BIGINT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+  serial_hex TEXT NOT NULL,
+  subject    TEXT NOT NULL DEFAULT '',
+  revoked_at TIMESTAMPTZ NOT NULL,
+  reason     INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(ca_id, serial_hex)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id           BIGSERIAL PRIMARY KEY,
+  username     TEXT NOT NULL UNIQUE,
+  source       TEXT NOT NULL DEFAULT 'local',
+  display_name TEXT NOT NULL DEFAULT '',
+  email        TEXT NOT NULL DEFAULT '',
+  role         TEXT NOT NULL DEFAULT 'user',
+  disabled     INTEGER NOT NULL DEFAULT 0,
+  pass_hash    TEXT NOT NULL DEFAULT '',
+  created_at   TIMESTAMPTZ NOT NULL,
+  last_login   TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id          BIGSERIAL PRIMARY KEY,
+  user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  TEXT NOT NULL UNIQUE,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL,
+  ip          TEXT NOT NULL DEFAULT '',
+  user_agent  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id           BIGSERIAL PRIMARY KEY,
+  user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  prefix       TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  role         TEXT NOT NULL DEFAULT 'user',
+  expires_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL,
+  last_used_at TIMESTAMPTZ,
+  revoked      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id      BIGSERIAL PRIMARY KEY,
+  ts      TIMESTAMPTZ NOT NULL,
+  actor   TEXT NOT NULL DEFAULT '',
+  action  TEXT NOT NULL,
+  target  TEXT NOT NULL DEFAULT '',
+  detail  TEXT NOT NULL DEFAULT '',
+  ip      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS acme_eab_creds (
+  id              BIGSERIAL PRIMARY KEY,
+  key_id          TEXT NOT NULL UNIQUE,
+  hmac_key_enc    TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  ca_id           BIGINT REFERENCES cas(id),
+  profile         TEXT NOT NULL DEFAULT 'server',
+  days            INTEGER NOT NULL DEFAULT 0,
+  allowed_domains TEXT NOT NULL DEFAULT '[]',
+  max_accounts    INTEGER NOT NULL DEFAULT 0,
+  account_count   INTEGER NOT NULL DEFAULT 0,
+  disabled        INTEGER NOT NULL DEFAULT 0,
+  expires_at      TIMESTAMPTZ,
+  created_by      TEXT NOT NULL DEFAULT '',
+  created_at      TIMESTAMPTZ NOT NULL,
+  last_used_at    TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS acme_accounts (
+  id             BIGSERIAL PRIMARY KEY,
+  eab_id         BIGINT NOT NULL REFERENCES acme_eab_creds(id),
+  jwk_json       TEXT NOT NULL,
+  jwk_thumbprint TEXT NOT NULL UNIQUE,
+  contact_json   TEXT NOT NULL DEFAULT '[]',
+  status         TEXT NOT NULL DEFAULT 'valid',
+  created_at     TIMESTAMPTZ NOT NULL,
+  last_used_at   TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS acme_orders (
+  id               BIGSERIAL PRIMARY KEY,
+  account_id       BIGINT NOT NULL REFERENCES acme_accounts(id) ON DELETE CASCADE,
+  status           TEXT NOT NULL DEFAULT 'pending',
+  identifiers_json TEXT NOT NULL,
+  certificate_id   BIGINT REFERENCES certificates(id),
+  error_json       TEXT NOT NULL DEFAULT '',
+  expires_at       TIMESTAMPTZ NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id);
+
+CREATE TABLE IF NOT EXISTS acme_authorizations (
+  id               BIGSERIAL PRIMARY KEY,
+  order_id         BIGINT NOT NULL REFERENCES acme_orders(id) ON DELETE CASCADE,
+  identifier_type  TEXT NOT NULL DEFAULT 'dns',
+  identifier_value TEXT NOT NULL,
+  wildcard         INTEGER NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'valid',
+  expires_at       TIMESTAMPTZ NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acme_authz_order ON acme_authorizations(order_id);
+
+CREATE TABLE IF NOT EXISTS acme_challenges (
+  id                BIGSERIAL PRIMARY KEY,
+  authorization_id  BIGINT NOT NULL REFERENCES acme_authorizations(id) ON DELETE CASCADE,
+  type              TEXT NOT NULL DEFAULT 'http-01',
+  token             TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'valid',
+  validated_at      TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acme_challenges_authz ON acme_challenges(authorization_id);
+`
+
 // Open connects to (and migrates) the SQLite database at path.
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
@@ -310,6 +511,104 @@ func hasColumn(db *sql.DB, table, column string) (bool, error) {
 	return false, rows.Err()
 }
 
+// PostgresParams are the connection details for OpenPostgres.
+type PostgresParams struct {
+	Host     string
+	Port     int
+	Name     string
+	User     string
+	Password string
+	SSLMode  string // disable|require|verify-ca|verify-full; default require
+}
+
+// OpenPostgres connects to (and migrates) a PostgreSQL database. It is the
+// PostgreSQL counterpart to Open; store.go and acme.go's queries run
+// unchanged against either backend, rewired by the driver registered in
+// pgrebind.go.
+func OpenPostgres(p PostgresParams) (*Store, error) {
+	if p.Port == 0 {
+		p.Port = 5432
+	}
+	if p.SSLMode == "" {
+		p.SSLMode = "require"
+	}
+	dsn := postgresDSN(p)
+	db, err := sql.Open("goca-postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	// Unlike SQLite, PostgreSQL handles concurrent writers itself.
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(time.Hour)
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open database %s:%d/%s: %w", p.Host, p.Port, p.Name, err)
+	}
+	if err := execStatements(db, schemaPostgres); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if err := migratePostgres(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate database: %w", err)
+	}
+	summary := fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=%s", p.User, p.Host, p.Port, p.Name, p.SSLMode)
+	return &Store{db: db, path: summary}, nil
+}
+
+// postgresDSN builds a libpq keyword/value connection string, quoting every
+// value so hosts, names, users or passwords containing spaces or quotes
+// round-trip correctly.
+func postgresDSN(p PostgresParams) string {
+	q := func(v string) string {
+		v = strings.ReplaceAll(v, `\`, `\\`)
+		v = strings.ReplaceAll(v, `'`, `\'`)
+		return "'" + v + "'"
+	}
+	return fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
+		q(p.Host), p.Port, q(p.Name), q(p.User), q(p.Password), q(p.SSLMode))
+}
+
+// execStatements runs each ";"-separated statement in schema individually.
+// The schema has no semicolons inside string literals, so a plain split is
+// safe, and it sidesteps any ambiguity in whether the driver's query-exec
+// mode of the moment supports multiple statements in one call.
+func execStatements(db *sql.DB, schema string) error {
+	for _, stmt := range strings.Split(schema, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", firstLine(stmt), err)
+		}
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// migratePostgres brings an existing PostgreSQL database up to the current
+// schema. Unlike SQLite, PostgreSQL supports "ADD COLUMN IF NOT EXISTS"
+// natively, so this reuses the same addedColumns table without needing a
+// separate existence check.
+func migratePostgres(db *sql.DB) error {
+	for _, c := range addedColumns {
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s", c.table, c.column, c.ddl)
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("add %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
+}
+
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -367,19 +666,19 @@ func (s *Store) CreateCA(ctx context.Context, c *CA) (*CA, error) {
 			c.IsDefault = true
 		}
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO cas
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO cas
 	 (name, slug, subject, subject_json, serial_hex, key_type, cert_pem, key_enc, is_root,
 	  parent_id, path_len, not_before, not_after, status, crl_number, fingerprint, is_default,
 	  created_by, created_at, csr_pem, external, subject_key_id, authority_key_id)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		c.Name, c.Slug, c.Subject, nz(c.SubjectJSON, "{}"), c.SerialHex, c.KeyType, c.CertPEM, c.KeyEnc,
 		c.IsRoot, parent, c.PathLen, c.NotBefore.UTC(), c.NotAfter.UTC(), nz(c.Status, StatusActive),
 		c.CRLNumber, c.Fingerprint, c.IsDefault, c.CreatedBy, c.CreatedAt.UTC(),
-		c.CSRPEM, c.External, c.SubjectKeyID, c.AuthorityKeyID)
+		c.CSRPEM, c.External, c.SubjectKeyID, c.AuthorityKeyID).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert CA: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return s.GetCA(ctx, id)
 }
 
@@ -673,18 +972,18 @@ func (s *Store) CreateCertificate(ctx context.Context, c *Certificate) (*Certifi
 	if c.RenewedFrom != nil {
 		renewedFrom = *c.RenewedFrom
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO certificates
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO certificates
 	 (ca_id, serial_hex, common_name, subject, sans_json, profile, key_type, cert_pem, key_enc,
 	  csr_pem, fingerprint, not_before, not_after, status, requested_by, note, created_at,
 	  renewed_from)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		c.CAID, c.SerialHex, c.CommonName, c.Subject, nz(c.SANsJSON, "[]"), nz(c.Profile, "server"),
 		c.KeyType, c.CertPEM, c.KeyEnc, c.CSRPEM, c.Fingerprint, c.NotBefore.UTC(), c.NotAfter.UTC(),
-		nz(c.Status, StatusActive), c.RequestedBy, c.Note, c.CreatedAt.UTC(), renewedFrom)
+		nz(c.Status, StatusActive), c.RequestedBy, c.Note, c.CreatedAt.UTC(), renewedFrom).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert certificate: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return s.GetCertificate(ctx, id)
 }
 
@@ -988,15 +1287,15 @@ func (s *Store) UpsertUser(ctx context.Context, u *User) (*User, error) {
 		}
 		return s.GetUser(ctx, existing.ID)
 	case errors.Is(err, ErrNotFound):
-		res, err := s.db.ExecContext(ctx,
+		var id int64
+		err := s.db.QueryRowContext(ctx,
 			`INSERT INTO users (username, source, display_name, email, role, disabled, pass_hash, created_at)
-			 VALUES (?,?,?,?,?,?,?,?)`,
+			 VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
 			u.Username, nz(u.Source, SourceLocal), u.DisplayName, u.Email, nz(u.Role, RoleUser),
-			u.Disabled, u.PassHash, time.Now().UTC())
+			u.Disabled, u.PassHash, time.Now().UTC()).Scan(&id)
 		if err != nil {
 			return nil, err
 		}
-		id, _ := res.LastInsertId()
 		return s.GetUser(ctx, id)
 	default:
 		return nil, err
@@ -1156,14 +1455,14 @@ func (s *Store) CreateAPIToken(ctx context.Context, t *APIToken) (*APIToken, err
 	if t.ExpiresAt != nil {
 		exp = t.ExpiresAt.UTC()
 	}
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO api_tokens (user_id, name, prefix, token_hash, role, expires_at, created_at)
-		 VALUES (?,?,?,?,?,?,?)`,
-		t.UserID, t.Name, t.Prefix, t.TokenHash, nz(t.Role, RoleUser), exp, time.Now().UTC())
+		 VALUES (?,?,?,?,?,?,?) RETURNING id`,
+		t.UserID, t.Name, t.Prefix, t.TokenHash, nz(t.Role, RoleUser), exp, time.Now().UTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+tokenCols+` FROM api_tokens t LEFT JOIN users u ON u.id = t.user_id WHERE t.id = ?`, id)
 	return scanToken(row)

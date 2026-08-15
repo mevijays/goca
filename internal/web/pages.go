@@ -591,7 +591,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"Tokens":          tokens,
 		"NewToken":        r.URL.Query().Get("token"),
 		"ConfigPath":      s.cfg.Path,
-		"DBPath":          s.cfg.DBPath,
+		"DBPath":          s.cfg.DatabaseSummary(),
 		"DataDir":         s.cfg.DataDir,
 		"SessionTTL":      s.cfg.Security.SessionTTL.String(),
 		"DefaultCertDays": s.cfg.CA.DefaultCertDays,

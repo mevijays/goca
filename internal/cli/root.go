@@ -14,6 +14,7 @@ import (
 	"github.com/mevijays/goca/internal/auth"
 	"github.com/mevijays/goca/internal/ca"
 	"github.com/mevijays/goca/internal/config"
+	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
 	"github.com/mevijays/goca/internal/web"
 )
@@ -68,7 +69,7 @@ func open() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(cfg.DBPath)
+	st, err := openStore(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +88,40 @@ func open() (*app, error) {
 		return nil, err
 	}
 	return &app{cfg: cfg, st: st, svc: svc, auth: mgr, log: newLogger()}, nil
+}
+
+// openStore opens the configured storage backend: SQLite (the default) at
+// cfg.DBPath, or PostgreSQL when cfg.Database.Driver selects it. The
+// PostgreSQL password is stored encrypted (like the LDAP bind password) and
+// is decrypted here, right before connecting.
+func openStore(cfg *config.Config) (*store.Store, error) {
+	if !cfg.Database.IsPostgres() {
+		return store.Open(cfg.DBPath)
+	}
+	d := cfg.Database
+	password := d.Password
+	if secret.IsEncrypted(password) {
+		key, err := cfg.MasterKeyBytes()
+		if err != nil {
+			return nil, err
+		}
+		box, err := secret.NewBox(key)
+		if err != nil {
+			return nil, err
+		}
+		password, err = box.DecryptString(password)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt database.password: %w", err)
+		}
+	}
+	return store.OpenPostgres(store.PostgresParams{
+		Host:     d.Host,
+		Port:     d.Port,
+		Name:     d.Name,
+		User:     d.User,
+		Password: password,
+		SSLMode:  d.SSLMode,
+	})
 }
 
 func newLogger() *slog.Logger {
@@ -116,8 +151,9 @@ func newRootCmd() *cobra.Command {
 goca is a single-binary certificate authority.
 
 It stores CAs, issued certificates and (optionally) their private keys in a
-SQLite database, serves an embedded web portal with LDAP or local login, and
-exposes the same capabilities over a REST API and this command line.
+database (SQLite by default, or PostgreSQL), serves an embedded web portal
+with LDAP or local login, and exposes the same capabilities over a REST API
+and this command line.
 
 Getting started:
   goca setup                    generate configuration, database and admin account

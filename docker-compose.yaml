@@ -1,0 +1,66 @@
+# docker-compose for goca, using the published release image from GHCR.
+#
+# Quick start (SQLite, the default backend - no other services needed):
+#
+#   docker compose run --rm goca setup --data-dir /data --out /data/config.yaml \
+#     --non-interactive --admin-user admin --admin-password 'change-me' \
+#     --base-url http://localhost:8080
+#   docker compose up -d goca
+#
+# With PostgreSQL instead (starts both services, via the "postgres" profile):
+#
+#   docker compose --profile postgres up -d db
+#   docker compose --profile postgres run --rm goca setup --data-dir /data --out /data/config.yaml \
+#     --non-interactive --admin-user admin --admin-password 'change-me' \
+#     --base-url http://localhost:8080 \
+#     --database-driver postgres --db-host db --db-name goca --db-user goca \
+#     --db-password "$POSTGRES_PASSWORD" --db-sslmode disable
+#   docker compose --profile postgres up -d
+#
+# `goca setup` only needs to run once; the config it writes to the goca-data
+# volume is what every later `docker compose up` reuses.
+
+services:
+  goca:
+    image: ghcr.io/mevijays/goca:latest # pin a release, e.g. ghcr.io/mevijays/goca:v1.2.3, once you've chosen one
+    container_name: goca
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - goca-data:/data
+    environment:
+      # Picked up automatically; only listed so it's easy to override.
+      GOCA_CONFIG: /data/config.yaml
+    # Uncomment to run goca against the "postgres" service below instead of
+    # its own SQLite file (also requires the "postgres" profile, see below).
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
+
+  # Optional PostgreSQL backend. Excluded by default; bring it up with
+  # `docker compose --profile postgres up -d db` and point `goca setup` at it
+  # with --database-driver postgres --db-host db (see the header comment).
+  db:
+    image: postgres:16-alpine
+    container_name: goca-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: goca
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: goca
+    volumes:
+      - goca-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goca -d goca"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No "ports:" mapping - only the goca service needs to reach it, over the
+    # compose network at host name "db". Add one back if you want a database
+    # client on the host to reach it too.
+
+volumes:
+  goca-data:
+  goca-postgres-data:

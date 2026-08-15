@@ -17,7 +17,6 @@ import (
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/pki"
 	"github.com/mevijays/goca/internal/secret"
-	"github.com/mevijays/goca/internal/store"
 )
 
 type setupFlags struct {
@@ -31,6 +30,14 @@ type setupFlags struct {
 	adminPass      string
 	nonInteractive bool
 	force          bool
+
+	dbDriver   string
+	dbHost     string
+	dbPort     int
+	dbName     string
+	dbUser     string
+	dbPassword string
+	dbSSLMode  string
 
 	ldapEnabled  bool
 	ldapURL      string
@@ -70,7 +77,7 @@ Creates everything goca needs to run:
   * a config file holding the server, auth and CA defaults
   * a 256-bit master key that encrypts private keys stored in the database
   * a session signing key
-  * the SQLite database and its schema
+  * the database and its schema - SQLite by default, or PostgreSQL when asked for
   * a local administrator account (the break-glass login, always available
     even when the directory server is down)
   * optionally, your first certificate authority
@@ -84,6 +91,11 @@ for unattended installs.`),
   # Unattended, local auth only
   goca setup --non-interactive --admin-user admin --admin-password 'S3cret!!' \
       --port 8080 --base-url https://ca.example.com
+
+  # Unattended with PostgreSQL instead of the default SQLite
+  goca setup --non-interactive --admin-user admin --admin-password 'S3cret!!' \
+      --database-driver postgres --db-host db.example.com --db-name goca \
+      --db-user goca --db-password 'S3cret!!' --db-sslmode require
 
   # Unattended with LDAP
   goca setup --non-interactive --auth-mode both \
@@ -110,6 +122,14 @@ for unattended installs.`),
 	fl.BoolVar(&f.nonInteractive, "non-interactive", false, "never prompt; use flags and defaults")
 	fl.BoolVar(&f.force, "force", false, "overwrite an existing config file")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", 8*time.Hour, "how long a portal session lasts")
+
+	fl.StringVar(&f.dbDriver, "database-driver", "sqlite", "storage backend: sqlite or postgres")
+	fl.StringVar(&f.dbHost, "db-host", "", "PostgreSQL host (required when --database-driver=postgres)")
+	fl.IntVar(&f.dbPort, "db-port", 5432, "PostgreSQL port")
+	fl.StringVar(&f.dbName, "db-name", "goca", "PostgreSQL database name")
+	fl.StringVar(&f.dbUser, "db-user", "goca", "PostgreSQL user")
+	fl.StringVar(&f.dbPassword, "db-password", "", "PostgreSQL password (encrypted in the config)")
+	fl.StringVar(&f.dbSSLMode, "db-sslmode", "require", "PostgreSQL SSL mode: disable, require, verify-ca or verify-full")
 
 	fl.BoolVar(&f.ldapEnabled, "ldap", false, "enable LDAP authentication")
 	fl.StringVar(&f.ldapURL, "ldap-url", "", "ldap:// or ldaps:// URL")
@@ -181,12 +201,66 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 		dataDir = ask("Data directory", dataDir)
 	}
 	cfg.DataDir = dataDir
-	cfg.DBPath = filepath.Join(dataDir, "goca.db")
-	if guided {
-		cfg.DBPath = ask("SQLite database file", cfg.DBPath)
-	}
 	kv("data directory", cfg.DataDir)
-	kv("database", cfg.DBPath)
+
+	driver := firstNonEmpty(f.dbDriver, string(config.DBDriverSQLite))
+	if guided {
+		driver = askChoice("Database backend", []string{"sqlite", "postgres"}, driver)
+	}
+	cfg.Database.Driver = config.DatabaseDriver(driver)
+
+	dbPassword := f.dbPassword
+	if cfg.Database.IsPostgres() {
+		d := &cfg.Database
+		d.Host = f.dbHost
+		d.Port = f.dbPort
+		d.Name = f.dbName
+		d.User = f.dbUser
+		d.SSLMode = f.dbSSLMode
+
+		if guided {
+			fmt.Println()
+			d.Host = askRequired("  PostgreSQL host", d.Host)
+			d.Port = askInt("  PostgreSQL port", firstNonZero(d.Port, 5432))
+			d.Name = askRequired("  Database name", firstNonEmpty(d.Name, "goca"))
+			d.User = askRequired("  Database user", firstNonEmpty(d.User, "goca"))
+			pw, err := askPassword("  Database password", false)
+			if err != nil {
+				return err
+			}
+			if pw != "" {
+				dbPassword = pw
+			}
+			d.SSLMode = askChoice("  SSL mode",
+				[]string{"require", "disable", "verify-ca", "verify-full"}, firstNonEmpty(d.SSLMode, "require"))
+		}
+		if d.Host == "" {
+			return errors.New("--db-host is required when --database-driver=postgres")
+		}
+		if d.Name == "" {
+			return errors.New("--db-name is required when --database-driver=postgres")
+		}
+		if d.User == "" {
+			return errors.New("--db-user is required when --database-driver=postgres")
+		}
+		if d.Port == 0 {
+			d.Port = 5432
+		}
+		if d.SSLMode == "" {
+			d.SSLMode = "require"
+		}
+		// Stashed until the master key exists; encrypted just below, same as
+		// the LDAP bind password.
+		d.Password = dbPassword
+		kv("database", fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=%s", d.User, d.Host, d.Port, d.Name, d.SSLMode))
+	} else {
+		cfg.Database.Driver = config.DBDriverSQLite
+		cfg.DBPath = filepath.Join(dataDir, "goca.db")
+		if guided {
+			cfg.DBPath = ask("SQLite database file", cfg.DBPath)
+		}
+		kv("database", cfg.DBPath)
+	}
 
 	// ---- web server ----
 	section("Web portal")
@@ -383,6 +457,21 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 		}
 		cfg.Auth.LDAP.BindPassword = enc
 	}
+	if cfg.Database.IsPostgres() && cfg.Database.Password != "" {
+		key, err := cfg.MasterKeyBytes()
+		if err != nil {
+			return err
+		}
+		box, err := secret.NewBox(key)
+		if err != nil {
+			return err
+		}
+		enc, err := box.EncryptString(cfg.Database.Password)
+		if err != nil {
+			return err
+		}
+		cfg.Database.Password = enc
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -397,12 +486,12 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 	ok("config written to %s (mode 0600)", outPath)
 
 	// ---- database ----
-	st, err := store.Open(cfg.DBPath)
+	st, err := openStore(cfg)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	ok("database initialised at %s", cfg.DBPath)
+	ok("database initialised at %s", cfg.DatabaseSummary())
 
 	svc, err := ca.New(cfg, st)
 	if err != nil {
@@ -471,7 +560,7 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 	// ---- summary ----
 	section("Done")
 	kv("config", outPath)
-	kv("database", cfg.DBPath)
+	kv("database", cfg.DatabaseSummary())
 	kv("admin user", adminUser)
 	if generated {
 		fmt.Println()
@@ -496,6 +585,15 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonZero(vals ...int) int {
+	for _, v := range vals {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func splitCSV(s string) []string {

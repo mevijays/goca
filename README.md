@@ -1,7 +1,8 @@
 # goca
 
 A self-hosted certificate authority in a single Go binary. The CLI, the REST API
-and an embedded web portal are the same program, backed by one SQLite file.
+and an embedded web portal are the same program, backed by one SQLite file by
+default, or PostgreSQL when you want a server-based database.
 
 **Documentation:**
 [SETUP.md](SETUP.md) — building, `goca setup`, running, installing as a
@@ -15,9 +16,13 @@ this file — what goca is and does, the REST API, and how it's built.
 ## What it is
 
 - **One binary, no runtime dependencies.** The web UI (HTML, CSS, JS) is compiled
-  in with `go:embed`. SQLite is the pure-Go `modernc.org/sqlite` driver, so there
-  is no cgo, no libc pinning and no OpenSSL to install. `GOOS=linux go build`
+  in with `go:embed`. The default SQLite backend is the pure-Go `modernc.org/sqlite`
+  driver, and the optional PostgreSQL backend is the pure-Go `jackc/pgx` driver, so
+  there is no cgo, no libc pinning and no OpenSSL to install. `GOOS=linux go build`
   produces a file you can scp anywhere.
+- **SQLite or PostgreSQL.** `goca setup` defaults to a SQLite file, zero extra
+  moving parts. Point it at PostgreSQL instead when you want a server-based
+  database — see [SETUP.md](SETUP.md#database).
 - **Everything in three places.** Every capability exists in the web UI, the REST
   API and the CLI, because all three call the same service layer
   ([internal/ca/service.go](internal/ca/service.go)). Nothing is CLI-only or
@@ -68,6 +73,19 @@ The image is published from every tagged release by
 `distroless/static`, running as a non-root user). Build it yourself with
 `docker build -t goca .`.
 
+Or with [docker-compose.yaml](docker-compose.yaml), which wires up the same
+image plus an optional PostgreSQL service:
+
+```bash
+docker compose run --rm goca setup --data-dir /data --out /data/config.yaml \
+    --non-interactive --admin-user admin --admin-password 'S3cret!!' \
+    --base-url http://localhost:8080
+docker compose up -d goca
+```
+
+See the comments at the top of that file for the PostgreSQL variant
+(`docker compose --profile postgres up -d`).
+
 ---
 
 ## A tour of what it does
@@ -78,8 +96,8 @@ Full flag-by-flag reference for every command below lives in
 ### Certificate authorities
 
 Create a self-signed root, then optionally intermediates beneath it so the root
-can go offline. The CA certificate and its encrypted private key live in SQLite,
-and both are downloadable at any time.
+can go offline. The CA certificate and its encrypted private key live in the
+database (SQLite or PostgreSQL), and both are downloadable at any time.
 
 ```bash
 goca ca create --wizard
@@ -454,7 +472,7 @@ ssl_certificate_key /etc/nginx/certs/app.internal.lan.key;
 ## Security notes
 
 - Private keys (CA and end-entity) are encrypted with AES-256-GCM under the
-  config's master key. Nothing sensitive is stored in cleartext in SQLite.
+  config's master key. Nothing sensitive is stored in cleartext in the database.
 - Session and API tokens are stored as SHA-256 hashes; passwords as bcrypt.
 - Serial numbers are 128 bits of `crypto/rand`.
 - All state-changing form posts require a CSRF token; session-authenticated API
@@ -492,7 +510,7 @@ GOOS=linux GOARCH=amd64 go build -o goca-linux-amd64 .
 | Package | Responsibility |
 | --- | --- |
 | `internal/pki` | keys, CSRs, CA creation, signing, CRLs — standard library crypto only |
-| `internal/store` | SQLite schema and queries |
+| `internal/store` | Schema and queries — SQLite by default, PostgreSQL optional |
 | `internal/secret` | AES-GCM encryption for keys at rest |
 | `internal/ca` | the service layer the CLI, API and portal all call |
 | `internal/auth` | local and LDAP authentication, sessions, API tokens |

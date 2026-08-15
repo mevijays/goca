@@ -102,17 +102,14 @@ func (s *Store) CreateEABCred(ctx context.Context, e *EABCred) (*EABCred, error)
 	if e.CAID != nil {
 		caID = *e.CAID
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO acme_eab_creds
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO acme_eab_creds
 	 (key_id, hmac_key_enc, name, ca_id, profile, days, allowed_domains, max_accounts,
 	  disabled, expires_at, created_by, created_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		e.KeyID, e.HMACKeyEnc, e.Name, caID, nz(e.Profile, "server"), e.Days,
 		encodeStrings(e.AllowedDomains), e.MaxAccounts, e.Disabled, e.ExpiresAt,
-		e.CreatedBy, e.CreatedAt.UTC())
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		e.CreatedBy, e.CreatedAt.UTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -241,15 +238,12 @@ func scanAcmeAccount(sc interface{ Scan(...any) error }) (*AcmeAccount, error) {
 
 // CreateAcmeAccount registers a new account.
 func (s *Store) CreateAcmeAccount(ctx context.Context, a *AcmeAccount) (*AcmeAccount, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO acme_accounts
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO acme_accounts
 	 (eab_id, jwk_json, jwk_thumbprint, contact_json, status, created_at)
-	 VALUES (?,?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?,?) RETURNING id`,
 		a.EABID, a.JWKJSON, a.JWKThumbprint, encodeStrings(a.Contact),
-		nz(a.Status, AcmeStatusValid), a.CreatedAt.UTC())
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		nz(a.Status, AcmeStatusValid), a.CreatedAt.UTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -393,15 +387,12 @@ func scanAcmeOrder(sc interface{ Scan(...any) error }) (*AcmeOrder, error) {
 
 // CreateAcmeOrder stores a new order.
 func (s *Store) CreateAcmeOrder(ctx context.Context, o *AcmeOrder) (*AcmeOrder, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO acme_orders
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO acme_orders
 	 (account_id, status, identifiers_json, expires_at, created_at)
-	 VALUES (?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?) RETURNING id`,
 		o.AccountID, nz(o.Status, AcmeStatusPending), encodeIdentifiers(o.Identifiers),
-		o.ExpiresAt.UTC(), o.CreatedAt.UTC())
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		o.ExpiresAt.UTC(), o.CreatedAt.UTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -496,15 +487,12 @@ func scanAcmeAuthz(sc interface{ Scan(...any) error }) (*AcmeAuthorization, erro
 
 // CreateAcmeAuthorization stores an authorization, pre-validated.
 func (s *Store) CreateAcmeAuthorization(ctx context.Context, a *AcmeAuthorization) (*AcmeAuthorization, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO acme_authorizations
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO acme_authorizations
 	 (order_id, identifier_type, identifier_value, wildcard, status, expires_at, created_at)
-	 VALUES (?,?,?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?,?,?) RETURNING id`,
 		a.OrderID, nz(a.IdentifierType, "dns"), a.IdentifierValue, a.Wildcard,
-		nz(a.Status, AcmeStatusValid), a.ExpiresAt.UTC(), a.CreatedAt.UTC())
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		nz(a.Status, AcmeStatusValid), a.ExpiresAt.UTC(), a.CreatedAt.UTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -571,15 +559,12 @@ func scanAcmeChallenge(sc interface{ Scan(...any) error }) (*AcmeChallenge, erro
 
 // CreateAcmeChallenge stores a challenge, pre-satisfied.
 func (s *Store) CreateAcmeChallenge(ctx context.Context, c *AcmeChallenge) (*AcmeChallenge, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO acme_challenges
+	var id int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO acme_challenges
 	 (authorization_id, type, token, status, validated_at, created_at)
-	 VALUES (?,?,?,?,?,?)`,
+	 VALUES (?,?,?,?,?,?) RETURNING id`,
 		c.AuthorizationID, nz(c.Type, "http-01"), c.Token, nz(c.Status, AcmeStatusValid),
-		c.ValidatedAt, c.CreatedAt.UTC())
-	if err != nil {
-		return nil, err
-	}
-	id, err := res.LastInsertId()
+		c.ValidatedAt, c.CreatedAt.UTC()).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
