@@ -1,0 +1,87 @@
+# The goca CSI provider: one pod per node, speaking gRPC over a Unix socket
+# to the upstream secrets-store-csi-driver's own DaemonSet (installed
+# separately - see README.md step 1). It holds no database or vault key
+# material - every Mount request it gets is relayed, over HTTPS with the
+# requesting pod's own token, to the central goca server named below.
+#
+# Before applying:
+#   1. Replace GOCA_BASE_URL with your goca server's base URL
+#      (e.g. https://goca.mylab.lan).
+#   2. If that server's TLS certificate isn't from a CA your nodes already
+#      trust, uncomment the --ca-cert flag and the goca-ca-bundle
+#      ConfigMap/volume below, and put the CA chain in that ConfigMap
+#      (`kubectl create configmap goca-ca-bundle --namespace goca-csi
+#      --from-file=ca.crt=<path to your goca CA chain>`).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: goca-csi-provider
+  namespace: goca-csi
+  labels:
+    app: goca-csi-provider
+spec:
+  selector:
+    matchLabels:
+      app: goca-csi-provider
+  template:
+    metadata:
+      labels:
+        app: goca-csi-provider
+    spec:
+      serviceAccountName: goca-csi-provider
+      tolerations:
+        # So the provider runs on control-plane nodes too, in case a pod
+        # needing a goca secret is ever scheduled there. Broaden this if
+        # your nodes carry other taints.
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      initContainers:
+        # The driver's own DaemonSet creates the shared socket directory as
+        # root:root 0755 - our container can traverse it but not create a
+        # socket inside it while running non-root (verified: binding fails
+        # with "permission denied" otherwise). Rather than run the whole
+        # provider as root to work around that, this one-shot root step
+        # hands ownership of just that directory to the provider's own uid.
+        - name: fix-socket-dir-ownership
+          image: busybox:latest
+          command: ["chown", "65532:65532", "/etc/kubernetes/secrets-store-csi-providers"]
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: provider-socket-dir
+              mountPath: /etc/kubernetes/secrets-store-csi-providers
+      containers:
+        - name: provider
+          image: ghcr.io/mevijays/goca:latest # pin a release once you've chosen one
+          # distroless:nonroot has no shell - args are passed directly, not
+          # via "sh -c", exactly like the main server container.
+          command: ["/usr/local/bin/goca"]
+          args:
+            - run
+            - csi-provider
+            - --socket-dir=/etc/kubernetes/secrets-store-csi-providers
+            - --audience=goca-csi
+            - --goca-address=https://GOCA_BASE_URL
+            # - --ca-cert=/var/run/goca-ca/ca.crt
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: provider-socket-dir
+              mountPath: /etc/kubernetes/secrets-store-csi-providers
+            # - name: goca-ca-bundle
+            #   mountPath: /var/run/goca-ca
+            #   readOnly: true
+      volumes:
+        - name: provider-socket-dir
+          hostPath:
+            # Must match the socket path the secrets-store-csi-driver's own
+            # DaemonSet mounts - this is its default.
+            path: /etc/kubernetes/secrets-store-csi-providers
+            type: DirectoryOrCreate
+        # - name: goca-ca-bundle
+        #   configMap:
+        #     name: goca-ca-bundle

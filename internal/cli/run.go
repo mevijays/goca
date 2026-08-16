@@ -2,16 +2,24 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 
+	"github.com/mevijays/goca/internal/csi"
+	v1alpha1 "github.com/mevijays/goca/internal/csi/v1alpha1"
 	"github.com/mevijays/goca/internal/service"
 	"github.com/mevijays/goca/internal/web"
 )
@@ -21,7 +29,7 @@ func newRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "Run a goca service in the foreground",
 	}
-	cmd.AddCommand(newRunWebCmd())
+	cmd.AddCommand(newRunWebCmd(), newRunCSIProviderCmd())
 	return cmd
 }
 
@@ -72,6 +80,120 @@ Serves the portal on the configured address, using the configuration written by
 	cmd.Flags().StringVar(&listen, "listen", "", "address to bind (overrides the config file)")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "serve HTTPS with this certificate")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "private key for --tls-cert")
+	return cmd
+}
+
+// newRunCSIProviderCmd serves the Kubernetes Secrets Store CSI Driver
+// provider side of the secret manager. Unlike every other `goca run`/CLI
+// command, this one never calls open(): it holds no database or vault key
+// material of its own and needs no config.yaml. See internal/csi's package
+// doc for why - every Mount call is just relayed, over HTTPS with the
+// requesting pod's own token, to a central goca server that does the actual
+// authentication and decryption.
+func newRunCSIProviderCmd() *cobra.Command {
+	var (
+		socketDir          string
+		providerName       string
+		audience           string
+		gocaAddress        string
+		caCertFile         string
+		insecureSkipVerify bool
+		timeout            time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "csi-provider",
+		Short: "Serve the Kubernetes Secrets Store CSI Driver provider",
+		Long: strings.TrimSpace(`
+Runs the gRPC server the upstream secrets-store-csi-driver talks to over a
+Unix domain socket - one instance per node, as a DaemonSet. It holds no
+database or vault key material of its own: every Mount call forwards the
+requesting pod's own bound ServiceAccount token to the central goca server
+named by --goca-address (or a SecretProviderClass's own gocaAddress
+parameter), which is the only place that authenticates the token, checks its
+bindings, and decrypts anything - the same trust boundary that already
+guards CA private keys and every other secret in goca.
+
+See k8s-demo/csi for a working DaemonSet, CSIDriver, RBAC and
+SecretProviderClass example, and SECRETS.md for the full walkthrough.`),
+		Example: strings.TrimSpace(`
+  goca run csi-provider --goca-address https://goca.mylab.lan --audience goca-csi
+  goca run csi-provider --audience goca-csi --ca-cert /var/run/secrets/goca-ca/ca.crt`),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := newLogger()
+
+			tlsCfg := &tls.Config{}
+			if insecureSkipVerify {
+				tlsCfg.InsecureSkipVerify = true //nolint:gosec // opt-in, lab use only
+			}
+			if caCertFile != "" {
+				pem, err := os.ReadFile(caCertFile)
+				if err != nil {
+					return fmt.Errorf("read --ca-cert: %w", err)
+				}
+				pool := x509.NewCertPool()
+				if !pool.AppendCertsFromPEM(pem) {
+					return fmt.Errorf("--ca-cert %s contains no certificates", caCertFile)
+				}
+				tlsCfg.RootCAs = pool
+			}
+			httpClient := &http.Client{
+				Timeout:   timeout,
+				Transport: &http.Transport{TLSClientConfig: tlsCfg},
+			}
+
+			provider := &csi.Provider{
+				Audience:           audience,
+				DefaultGocaAddress: gocaAddress,
+				HTTPClient:         httpClient,
+				RuntimeVersion:     Version,
+				Log:                log,
+			}
+
+			if err := os.MkdirAll(socketDir, 0o750); err != nil {
+				return fmt.Errorf("create socket directory %s: %w", socketDir, err)
+			}
+			sockPath := filepath.Join(socketDir, providerName+".sock")
+			// A previous crashed run can leave a stale socket file behind;
+			// net.Listen refuses to bind over one.
+			if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove stale socket %s: %w", sockPath, err)
+			}
+			lis, err := net.Listen("unix", sockPath)
+			if err != nil {
+				return fmt.Errorf("listen on %s: %w", sockPath, err)
+			}
+			defer lis.Close()
+			if err := os.Chmod(sockPath, 0o660); err != nil {
+				return fmt.Errorf("chmod %s: %w", sockPath, err)
+			}
+
+			grpcServer := grpc.NewServer()
+			v1alpha1.RegisterCSIDriverProviderServer(grpcServer, provider)
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			go func() {
+				<-ctx.Done()
+				log.Info("shutting down", "socket", sockPath)
+				grpcServer.GracefulStop()
+			}()
+
+			log.Info("goca csi provider listening", "socket", sockPath, "audience", audience, "goca_address", gocaAddress)
+			return grpcServer.Serve(lis)
+		},
+	}
+	fl := cmd.Flags()
+	fl.StringVar(&socketDir, "socket-dir", "/etc/kubernetes/secrets-store-csi-providers",
+		"directory the driver looks for provider sockets in")
+	fl.StringVar(&providerName, "provider-name", "goca", "this provider's name (must match ^[a-zA-Z0-9_-]{0,30}$)")
+	fl.StringVar(&audience, "audience", "goca-csi",
+		"token audience to request from pods and forward to the goca server (must match the CSIDriver's tokenRequests audience and the server's csi.audience)")
+	fl.StringVar(&gocaAddress, "goca-address", "",
+		"default goca server URL, used when a SecretProviderClass omits its own gocaAddress parameter")
+	fl.StringVar(&caCertFile, "ca-cert", "", "trust this CA when connecting to the goca server (PEM file)")
+	fl.BoolVar(&insecureSkipVerify, "insecure-skip-verify", false,
+		"skip TLS verification connecting to the goca server (lab use only)")
+	fl.DurationVar(&timeout, "timeout", 10*time.Second, "HTTP timeout talking to the goca server")
 	return cmd
 }
 

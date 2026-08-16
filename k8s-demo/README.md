@@ -167,3 +167,11 @@ See **[../ACME-EAB.md#troubleshooting](../ACME-EAB.md#troubleshooting)** —
 it covers `externalAccountRequired`, `rejectedIdentifier`, `badCSR`, orders
 stuck at `pending`, and `ClusterIssuer: Ready: False` in more depth than
 duplicated here.
+
+## Related: mounting secrets directly with the CSI driver
+
+This demo gets a certificate into Kubernetes as a `Secret`, via ACME. If you
+want to mount a goca secret — including a certificate — straight into a
+pod as files, with nothing ever written to etcd, see
+**[csi/README.md](csi/README.md)** instead: it walks through goca's
+Secrets Store CSI Driver provider.

@@ -31,6 +31,7 @@ type Config struct {
 	Security SecurityConfig `yaml:"security"`
 	Auth     AuthConfig     `yaml:"auth"`
 	CA       CAConfig       `yaml:"ca"`
+	CSI      CSIConfig      `yaml:"csi"`
 }
 
 // DatabaseDriver selects which backend the store package opens.
@@ -205,6 +206,40 @@ type OIDCConfig struct {
 	// case-insensitively against the groups claim's values.
 	AdminGroups   []string `yaml:"admin_groups"`
 	AllowedGroups []string `yaml:"allowed_groups"`
+}
+
+// CSIConfig configures the Kubernetes Secrets Store CSI Driver integration:
+// how the server authenticates the ServiceAccount tokens a `goca run
+// csi-provider` DaemonSet forwards on a requesting pod's behalf, at
+// POST /api/v1/vault/fetch. See k8s-demo/csi for working manifests.
+type CSIConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Audience every presented token must be bound to - matches the
+	// CSIDriver's spec.tokenRequests[].audience and the --audience flag
+	// `goca run csi-provider` is started with. Defaults to "goca-csi".
+	Audience string `yaml:"audience,omitempty"`
+
+	// IssuerURL is the cluster's ServiceAccount OIDC issuer
+	// (--service-account-issuer on the API server, or a managed cluster's
+	// published issuer, e.g. an EKS/GKE/AKS OIDC provider URL). When set
+	// and reachable, tokens are verified locally against its JWKS - no
+	// per-request round trip to the API server. Leave empty for clusters
+	// whose issuer is not publicly resolvable (kind, most on-prem
+	// clusters) and rely on the TokenReview fields below instead.
+	IssuerURL string `yaml:"issuer_url,omitempty"`
+	// InsecureSkipVerify disables certificate verification talking to
+	// IssuerURL or APIServerURL (lab use only).
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
+
+	// APIServerURL/CACert/ReviewerToken configure the TokenReview API
+	// fallback. ReviewerToken belongs to a ServiceAccount bound to the
+	// system:auth-delegator ClusterRole. Like database.password, it may be
+	// stored either encrypted with MasterKey (enc: prefix) or as plaintext
+	// for a hand-edited config.yaml - both are accepted.
+	APIServerURL  string `yaml:"api_server_url,omitempty"`
+	CACert        string `yaml:"ca_cert,omitempty"` // PEM
+	ReviewerToken string `yaml:"reviewer_token,omitempty"`
 }
 
 // CAConfig holds issuance defaults.

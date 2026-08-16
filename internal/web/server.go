@@ -18,9 +18,14 @@ import (
 	"github.com/mevijays/goca/internal/auth"
 	"github.com/mevijays/goca/internal/ca"
 	"github.com/mevijays/goca/internal/config"
+	"github.com/mevijays/goca/internal/k8sauth"
+	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
 	"github.com/mevijays/goca/internal/vault"
 )
+
+// defaultCSIAudience is used when CSIConfig.Audience is left blank.
+const defaultCSIAudience = "goca-csi"
 
 // Server owns the HTTP handlers and their dependencies.
 type Server struct {
@@ -31,6 +36,10 @@ type Server struct {
 	tpl   *templates
 	acme  *acme.Service
 	vault *vault.Service
+	// k8s verifies the ServiceAccount tokens a CSI provider forwards on a
+	// requesting pod's behalf. nil when CSIConfig.Enabled is false - the
+	// vault/fetch handler reports that plainly rather than panicking.
+	k8s *k8sauth.Verifier
 }
 
 // Options tune the HTTP listener at run time, overriding the config file.
@@ -55,7 +64,42 @@ func NewServer(svc *ca.Service, mgr *auth.Manager, logger *slog.Logger) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("build vault service: %w", err)
 	}
-	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc}, nil
+	k8s, err := buildK8sVerifier(svc)
+	if err != nil {
+		return nil, fmt.Errorf("build Kubernetes ServiceAccount token verifier: %w", err)
+	}
+	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s}, nil
+}
+
+// buildK8sVerifier constructs the CSI provider's token verifier from
+// CSIConfig, or returns nil when the integration is disabled. The reviewer
+// token accepts either an encrypted (enc: prefix) or plaintext value, like
+// database.password - see CSIConfig's doc comment.
+func buildK8sVerifier(svc *ca.Service) (*k8sauth.Verifier, error) {
+	cfg := svc.Config().CSI
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	reviewerToken := cfg.ReviewerToken
+	if secret.IsEncrypted(reviewerToken) {
+		var err error
+		reviewerToken, err = svc.Box().DecryptString(reviewerToken)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt csi.reviewer_token: %w", err)
+		}
+	}
+	audience := cfg.Audience
+	if audience == "" {
+		audience = defaultCSIAudience
+	}
+	return k8sauth.New(k8sauth.Config{
+		IssuerURL:          cfg.IssuerURL,
+		Audience:           audience,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		APIServerURL:       cfg.APIServerURL,
+		CACertPEM:          []byte(cfg.CACert),
+		ReviewerToken:      reviewerToken,
+	})
 }
 
 // Handler builds the complete route table.
@@ -241,6 +285,11 @@ func (s *Server) Handler() http.Handler {
 	apiAdmin("GET /api/v1/secrets/{id}/bindings", s.apiSecretBindingList)
 	apiAdmin("POST /api/v1/secrets/{id}/bindings", s.apiSecretBindingCreate)
 	apiAdmin("DELETE /api/v1/secret-bindings/{id}", s.apiSecretBindingDelete)
+
+	// CSI-facing fetch, authenticated by a Kubernetes ServiceAccount token
+	// (internal/k8sauth) rather than a goca session or API token - see
+	// api_vault_fetch.go.
+	mux.Handle("POST /api/v1/vault/fetch", s.apiAuthK8s(s.apiVaultFetch))
 
 	return s.recoverer(s.logRequests(securityHeaders(mux)))
 }

@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goca-csi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goca-csi-provider
+  namespace: goca-csi
+---
+# Only needed if the goca server is configured to fall back to the
+# TokenReview API (csi.api_server_url set) - the common case for kind and
+# most on-prem clusters, whose default ServiceAccount issuer isn't publicly
+# resolvable. If your cluster has a public issuer and the server only uses
+# csi.issuer_url (OIDC/JWKS verification), this binding is unused but
+# harmless to leave in place.
+#
+# It is bound to the *goca server's* reviewer ServiceAccount, not the
+# provider DaemonSet's - the server is what calls TokenReview, using this
+# identity's own token as its credential. If the server runs outside this
+# cluster, create this ServiceAccount+binding in whichever cluster it can
+# reach, and give the server that ServiceAccount's token as
+# csi.reviewer_token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goca-server-token-reviewer
+  namespace: goca-csi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: goca-server-auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: goca-server-token-reviewer
+    namespace: goca-csi
+roleRef:
+  kind: ClusterRole
+  name: system:auth-delegator
+  apiGroup: rbac.authorization.k8s.io

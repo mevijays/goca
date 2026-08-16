@@ -1,0 +1,49 @@
+# A pod mounting both example SecretProviderClasses via the CSI ephemeral
+# inline volume - the standard way an application pod consumes them; there
+# is no separate PersistentVolume/PersistentVolumeClaim involved.
+#
+# Its ServiceAccount ("demo-app" in the "default" namespace here) must be
+# bound to demo/db/password and demo/web-tls in goca before this will mount
+# successfully - see README.md step 3
+# (`goca secret bind add demo/db/password --namespace default --service-account demo-app`).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-app
+  namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-app
+  namespace: default
+spec:
+  serviceAccountName: demo-app
+  containers:
+    - name: app
+      image: busybox:latest
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: db-password
+          mountPath: /mnt/secrets/db
+          readOnly: true
+        - name: web-tls
+          mountPath: /mnt/secrets/tls
+          readOnly: true
+  volumes:
+    - name: db-password
+      csi:
+        # The shared driver name every provider registers under - see
+        # csidriver.yaml for why this isn't "goca.csi.k8s.io".
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: goca-db-password
+    - name: web-tls
+      csi:
+        # The shared driver name every provider registers under - see
+        # csidriver.yaml for why this isn't "goca.csi.k8s.io".
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: goca-web-tls

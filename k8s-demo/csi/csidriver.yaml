@@ -1,0 +1,26 @@
+# The upstream secrets-store-csi-driver Helm chart already registers ITS
+# OWN CSIDriver object named "secrets-store.csi.k8s.io" - that is the one
+# driver name every provider (goca included) shares and that pod.yaml's CSI
+# volume references. Creating a second, separate CSIDriver object for goca
+# would register a driver name kubelet has no CSI Node plugin for, and every
+# mount attempt would fail with "driver name ... not found in the list of
+# registered CSI drivers" (verified against a real cluster while building
+# this demo).
+#
+# What goca-specific configuration DOES need to land somewhere is the token
+# audience: tokenRequests is what makes kubelet mint a bound ServiceAccount
+# token for goca's audience and hand it to the provider. tokenRequests is an
+# array, so multiple providers sharing the one CSIDriver object each add
+# their own entry - this patches in goca's, leaving anything already there
+# (e.g. another provider's own audience) untouched:
+#
+#   kubectl patch csidriver secrets-store.csi.k8s.io --type merge -p \
+#     '{"spec":{"tokenRequests":[{"audience":"goca-csi","expirationSeconds":3600}]}}'
+#
+# Verify it landed:
+#
+#   kubectl get csidriver secrets-store.csi.k8s.io -o jsonpath='{.spec.tokenRequests}'
+#
+# --audience on `goca run csi-provider` (provider-daemonset.yaml) and
+# csi.audience in the goca server's config.yaml must both match the
+# audience used here.
