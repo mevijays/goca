@@ -16,6 +16,7 @@ import (
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
+	"github.com/mevijays/goca/internal/vault"
 	"github.com/mevijays/goca/internal/web"
 )
 
@@ -36,11 +37,12 @@ var (
 
 // app carries the loaded runtime for command implementations.
 type app struct {
-	cfg  *config.Config
-	st   *store.Store
-	svc  *ca.Service
-	auth *auth.Manager
-	log  *slog.Logger
+	cfg   *config.Config
+	st    *store.Store
+	svc   *ca.Service
+	auth  *auth.Manager
+	vault *vault.Service
+	log   *slog.Logger
 }
 
 func (a *app) Close() {
@@ -87,7 +89,12 @@ func open() (*app, error) {
 		st.Close()
 		return nil, err
 	}
-	return &app{cfg: cfg, st: st, svc: svc, auth: mgr, log: newLogger()}, nil
+	vSvc, err := vault.New(cfg, st, svc)
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	return &app{cfg: cfg, st: st, svc: svc, auth: mgr, vault: vSvc, log: newLogger()}, nil
 }
 
 // openStore opens the configured storage backend: SQLite (the default) at
@@ -185,6 +192,7 @@ Getting started:
 		newTokenCmd(),
 		newLDAPCmd(),
 		newACMECmd(),
+		newSecretCmd(),
 		newVersionCmd(),
 	)
 	return root

@@ -19,16 +19,18 @@ import (
 	"github.com/mevijays/goca/internal/ca"
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/store"
+	"github.com/mevijays/goca/internal/vault"
 )
 
 // Server owns the HTTP handlers and their dependencies.
 type Server struct {
-	svc  *ca.Service
-	auth *auth.Manager
-	cfg  *config.Config
-	log  *slog.Logger
-	tpl  *templates
-	acme *acme.Service
+	svc   *ca.Service
+	auth  *auth.Manager
+	cfg   *config.Config
+	log   *slog.Logger
+	tpl   *templates
+	acme  *acme.Service
+	vault *vault.Service
 }
 
 // Options tune the HTTP listener at run time, overriding the config file.
@@ -49,7 +51,11 @@ func NewServer(svc *ca.Service, mgr *auth.Manager, logger *slog.Logger) (*Server
 	if err != nil {
 		return nil, err
 	}
-	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc)}, nil
+	vSvc, err := vault.New(svc.Config(), svc.Store(), svc)
+	if err != nil {
+		return nil, fmt.Errorf("build vault service: %w", err)
+	}
+	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc}, nil
 }
 
 // Handler builds the complete route table.
@@ -217,6 +223,24 @@ func (s *Server) Handler() http.Handler {
 	apiAdmin("GET /api/v1/acme/accounts", s.apiACMEAccountList)
 	apiAdmin("GET /api/v1/acme/accounts/{id}", s.apiACMEAccountGet)
 	apiAdmin("GET /api/v1/acme/accounts/{id}/orders", s.apiACMEAccountOrders)
+
+	// Secret manager. Admin-only in this phase; a scoped, workload-facing
+	// fetch endpoint arrives with the Kubernetes CSI provider in a later
+	// phase. See internal/vault and SECRETS.md.
+	apiAdmin("GET /api/v1/secrets", s.apiSecretList)
+	apiAdmin("POST /api/v1/secrets", s.apiSecretCreate)
+	apiAdmin("GET /api/v1/secrets/{id}", s.apiSecretGet)
+	apiAdmin("PATCH /api/v1/secrets/{id}", s.apiSecretUpdate)
+	apiAdmin("DELETE /api/v1/secrets/{id}", s.apiSecretDelete)
+	apiAdmin("POST /api/v1/secrets/{id}/disable", s.apiSecretDisable)
+	apiAdmin("GET /api/v1/secrets/{id}/materialize", s.apiSecretMaterialize)
+	apiAdmin("GET /api/v1/secrets/{id}/versions", s.apiSecretVersionList)
+	apiAdmin("POST /api/v1/secrets/{id}/versions", s.apiSecretVersionPut)
+	apiAdmin("GET /api/v1/secrets/{id}/versions/{version}", s.apiSecretVersionGet)
+	apiAdmin("POST /api/v1/secrets/{id}/versions/{version}/destroy", s.apiSecretVersionDestroy)
+	apiAdmin("GET /api/v1/secrets/{id}/bindings", s.apiSecretBindingList)
+	apiAdmin("POST /api/v1/secrets/{id}/bindings", s.apiSecretBindingCreate)
+	apiAdmin("DELETE /api/v1/secret-bindings/{id}", s.apiSecretBindingDelete)
 
 	return s.recoverer(s.logRequests(securityHeaders(mux)))
 }

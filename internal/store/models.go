@@ -250,6 +250,101 @@ type CertFilter struct {
 	SortDesc    bool
 }
 
+// Secret types.
+const (
+	SecretTypeKV          = "kv"          // an opaque key=value or blob payload
+	SecretTypeFile        = "file"        // a named file (config, credentials JSON, ...)
+	SecretTypeCertificate = "certificate" // materialized from a goca-issued certificate
+)
+
+// Secret is a named, versioned entry in the secret manager. This row is
+// metadata; the sealed payload lives in that secret's SecretVersion rows. See
+// internal/pqcrypt for how versions are sealed and internal/vault for how
+// they are read, written and bound to Kubernetes workloads via the CSI
+// provider.
+type Secret struct {
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	Type           string    `json:"type"`
+	Description    string    `json:"description,omitempty"`
+	LabelsJSON     string    `json:"-"`
+	CertID         *int64    `json:"cert_id,omitempty"`
+	CurrentVersion int       `json:"current_version"`
+	RotationDays   int       `json:"rotation_days,omitempty"`
+	Disabled       bool      `json:"disabled"`
+	CreatedBy      string    `json:"created_by"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// Labels decodes the secret's stored label map.
+func (s *Secret) Labels() map[string]string {
+	if strings.TrimSpace(s.LabelsJSON) == "" {
+		return nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal([]byte(s.LabelsJSON), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// EncodeLabels serialises a label map for storage.
+func EncodeLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(labels)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// RotationDue reports whether the secret's rotation policy says a new
+// version is overdue.
+func (s *Secret) RotationDue() bool {
+	if s.RotationDays <= 0 {
+		return false
+	}
+	return time.Since(s.UpdatedAt) > time.Duration(s.RotationDays)*24*time.Hour
+}
+
+// SecretVersion is one immutable, sealed revision of a secret's payload.
+// PayloadEnc holds a single pqcrypt.Seal() envelope (prefixed "pqenc:v1:")
+// and is never stored, logged, or returned in plaintext outside internal/vault.
+type SecretVersion struct {
+	ID            int64     `json:"id"`
+	SecretID      int64     `json:"secret_id"`
+	Version       int       `json:"version"`
+	PayloadEnc    string    `json:"-"`
+	PayloadSHA256 string    `json:"payload_sha256"`
+	SizeBytes     int64     `json:"size_bytes"`
+	ContentType   string    `json:"content_type,omitempty"`
+	Destroyed     bool      `json:"destroyed"`
+	CreatedBy     string    `json:"created_by"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// SecretBinding authorizes a Kubernetes (namespace, ServiceAccount) pair -
+// each glob-matched with path.Match syntax by internal/vault - to fetch a
+// secret through the CSI provider. "*" matches anything.
+type SecretBinding struct {
+	ID                int64      `json:"id"`
+	SecretID          int64      `json:"secret_id"`
+	SecretName        string     `json:"secret_name,omitempty"` // filled in by joined list queries
+	K8sNamespace      string     `json:"k8s_namespace"`
+	K8sServiceAccount string     `json:"k8s_service_account"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+	CreatedBy         string     `json:"created_by"`
+	CreatedAt         time.Time  `json:"created_at"`
+}
+
+// Usable reports whether this binding is still in effect.
+func (b *SecretBinding) Usable() bool {
+	return b.ExpiresAt == nil || time.Now().Before(*b.ExpiresAt)
+}
+
 // Stats summarises the database for the dashboard.
 type Stats struct {
 	CAs             int `json:"cas"`

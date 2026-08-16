@@ -221,6 +221,56 @@ CREATE TABLE IF NOT EXISTS acme_challenges (
   created_at        TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_acme_challenges_authz ON acme_challenges(authorization_id);
+
+-- Secret manager: named, versioned secrets sealed with the hybrid ML-KEM-768
+-- + X25519 envelope in internal/pqcrypt. See SECRETS.md for the design.
+CREATE TABLE IF NOT EXISTS secrets (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT NOT NULL UNIQUE,       -- path-like, e.g. "team-a/db/password"
+  type            TEXT NOT NULL DEFAULT 'kv',  -- kv | file | certificate
+  description     TEXT NOT NULL DEFAULT '',
+  labels_json     TEXT NOT NULL DEFAULT '{}',
+  cert_id         INTEGER REFERENCES certificates(id), -- set only when type = certificate
+  current_version INTEGER NOT NULL DEFAULT 0,
+  rotation_days   INTEGER NOT NULL DEFAULT 0,  -- 0 = no rotation policy
+  disabled        INTEGER NOT NULL DEFAULT 0,
+  created_by      TEXT NOT NULL DEFAULT '',
+  created_at      TIMESTAMP NOT NULL,
+  updated_at      TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secrets_type ON secrets(type);
+
+-- Immutable per-version payloads. payload_enc is one self-describing
+-- pqcrypt.Seal() envelope (pqenc:v1:...): the DEK wrap and the AEAD payload
+-- travel together as a single opaque blob rather than in separate columns.
+CREATE TABLE IF NOT EXISTS secret_versions (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  secret_id      INTEGER NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+  version        INTEGER NOT NULL,
+  payload_enc    TEXT NOT NULL,              -- pqenc:v1: envelope
+  payload_sha256 TEXT NOT NULL,              -- of the plaintext; doubles as the CSI object_version
+  size_bytes     INTEGER NOT NULL DEFAULT 0,
+  content_type   TEXT NOT NULL DEFAULT '',   -- e.g. a filename or MIME hint, for "file" secrets
+  destroyed      INTEGER NOT NULL DEFAULT 0,
+  created_by     TEXT NOT NULL DEFAULT '',
+  created_at     TIMESTAMP NOT NULL,
+  UNIQUE(secret_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_secret_versions_secret ON secret_versions(secret_id);
+
+-- Which Kubernetes (namespace, ServiceAccount) pairs may fetch a secret
+-- through the CSI provider. Glob-matched (path.Match syntax) by internal/vault.
+CREATE TABLE IF NOT EXISTS secret_bindings (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  secret_id           INTEGER NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+  k8s_namespace       TEXT NOT NULL DEFAULT '*',
+  k8s_service_account TEXT NOT NULL DEFAULT '*',
+  expires_at          TIMESTAMP,
+  created_by          TEXT NOT NULL DEFAULT '',
+  created_at          TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secret_bindings_secret ON secret_bindings(secret_id);
+CREATE INDEX IF NOT EXISTS idx_secret_bindings_ns ON secret_bindings(k8s_namespace);
 `
 
 // schemaPostgres is the PostgreSQL equivalent of schema above. The two are
@@ -422,6 +472,49 @@ CREATE TABLE IF NOT EXISTS acme_challenges (
   created_at        TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_acme_challenges_authz ON acme_challenges(authorization_id);
+
+CREATE TABLE IF NOT EXISTS secrets (
+  id              BIGSERIAL PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  type            TEXT NOT NULL DEFAULT 'kv',
+  description     TEXT NOT NULL DEFAULT '',
+  labels_json     TEXT NOT NULL DEFAULT '{}',
+  cert_id         BIGINT REFERENCES certificates(id),
+  current_version INTEGER NOT NULL DEFAULT 0,
+  rotation_days   INTEGER NOT NULL DEFAULT 0,
+  disabled        INTEGER NOT NULL DEFAULT 0,
+  created_by      TEXT NOT NULL DEFAULT '',
+  created_at      TIMESTAMPTZ NOT NULL,
+  updated_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secrets_type ON secrets(type);
+
+CREATE TABLE IF NOT EXISTS secret_versions (
+  id             BIGSERIAL PRIMARY KEY,
+  secret_id      BIGINT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+  version        INTEGER NOT NULL,
+  payload_enc    TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  size_bytes     INTEGER NOT NULL DEFAULT 0,
+  content_type   TEXT NOT NULL DEFAULT '',
+  destroyed      INTEGER NOT NULL DEFAULT 0,
+  created_by     TEXT NOT NULL DEFAULT '',
+  created_at     TIMESTAMPTZ NOT NULL,
+  UNIQUE(secret_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_secret_versions_secret ON secret_versions(secret_id);
+
+CREATE TABLE IF NOT EXISTS secret_bindings (
+  id                  BIGSERIAL PRIMARY KEY,
+  secret_id           BIGINT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
+  k8s_namespace       TEXT NOT NULL DEFAULT '*',
+  k8s_service_account TEXT NOT NULL DEFAULT '*',
+  expires_at          TIMESTAMPTZ,
+  created_by          TEXT NOT NULL DEFAULT '',
+  created_at          TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secret_bindings_secret ON secret_bindings(secret_id);
+CREATE INDEX IF NOT EXISTS idx_secret_bindings_ns ON secret_bindings(k8s_namespace);
 `
 
 // Open connects to (and migrates) the SQLite database at path.
