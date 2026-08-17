@@ -44,7 +44,7 @@ func (s *Server) apiCAImportSigned(w http.ResponseWriter, r *http.Request) error
 		return badRequestFrom(err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ca":             caResponse{CA: c, CertPEM: c.CertPEM, Info: describeOrNil(c.CertPEM)},
+		"ca":             newCAResponse(c, describeOrNil(c.CertPEM)),
 		"chain_complete": s.svc.ChainComplete(r.Context(), c),
 	})
 	return nil
@@ -62,7 +62,7 @@ func (s *Server) apiCAImport(w http.ResponseWriter, r *http.Request) error {
 		return badRequestFrom(err)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"ca":             caResponse{CA: c, CertPEM: c.CertPEM, Info: describeOrNil(c.CertPEM)},
+		"ca":             newCAResponse(c, describeOrNil(c.CertPEM)),
 		"can_issue":      c.CanIssue(),
 		"chain_complete": s.svc.ChainComplete(r.Context(), c),
 	})
@@ -77,7 +77,7 @@ func (s *Server) apiCAPending(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := make([]map[string]any, 0, len(pending))
 	for _, c := range pending {
-		out = append(out, map[string]any{"ca": c, "csr_pem": c.CSRPEM})
+		out = append(out, map[string]any{"ca": newCAResponse(c, nil), "csr_pem": c.CSRPEM})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pending": out, "count": len(out)})
 	return nil
@@ -85,7 +85,7 @@ func (s *Server) apiCAPending(w http.ResponseWriter, r *http.Request) error {
 
 // apiCACSR returns the stored request of a pending authority.
 func (s *Server) apiCACSR(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func (s *Server) apiCACSR(w http.ResponseWriter, r *http.Request) error {
 
 // apiCARevoke retires an authority.
 func (s *Server) apiCARevoke(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}

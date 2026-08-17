@@ -57,16 +57,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func (s *Server) apiAuth(h apiHandler, adminOnly bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var u *store.User
+		// Kept so apiMe can describe the credential itself, not just its
+		// owner - a remote client needs the token's expiry and its (possibly
+		// lower) capped role, neither of which is visible on the user.
+		var tok *store.APIToken
 
 		if authz := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
 			token := strings.TrimSpace(authz[7:])
-			user, _, err := s.auth.UserFromAPIToken(r.Context(), token)
+			user, rec, err := s.auth.UserFromAPIToken(r.Context(), token)
 			if err != nil {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{
 					"error": "invalid or expired API token"})
 				return
 			}
-			u = user
+			u, tok = user, rec
 		} else if user, _ := s.userFromRequest(r); user != nil {
 			// Session-authenticated calls from the portal's own JavaScript must
 			// carry the CSRF token, or a third-party page could drive the API.
@@ -89,24 +93,54 @@ func (s *Server) apiAuth(h apiHandler, adminOnly bool) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), ctxUser, u)
+		if tok != nil {
+			ctx = context.WithValue(ctx, ctxToken, tok)
+		}
 		if err := h(w, r.WithContext(ctx)); err != nil {
-			var ae *apiError
-			if errors.As(err, &ae) {
-				body := map[string]string{"error": ae.Msg}
-				if ae.Err != nil {
-					body["detail"] = ae.Err.Error()
-				}
-				writeJSON(w, ae.Status, body)
-				return
-			}
-			if errors.Is(err, store.ErrNotFound) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-				return
-			}
-			s.log.Error("api error", "path", r.URL.Path, "error", err)
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			s.renderAPIError(w, r, err)
 		}
 	})
+}
+
+// renderAPIError writes a handler's error as a JSON problem response. Split
+// out of apiAuth so unauthenticated JSON endpoints (apiPublic) render errors
+// identically without inheriting a credential check.
+func (s *Server) renderAPIError(w http.ResponseWriter, r *http.Request, err error) {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		body := map[string]string{"error": ae.Msg}
+		if ae.Err != nil {
+			body["detail"] = ae.Err.Error()
+		}
+		writeJSON(w, ae.Status, body)
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	s.log.Error("api error", "path", r.URL.Path, "error", err)
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+}
+
+// apiPublic wraps a handler that performs its own authentication, or needs
+// none. It shares apiAuth's JSON error rendering but applies no credential
+// check of its own, so it must only ever be used for endpoints that are
+// deliberately reachable unauthenticated - today just POST /api/v1/auth/login,
+// which *is* the credential check and is the bootstrap for the rest of the API.
+func (s *Server) apiPublic(h apiHandler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := h(w, r); err != nil {
+			s.renderAPIError(w, r, err)
+		}
+	})
+}
+
+// currentToken returns the API token this request authenticated with, or nil
+// for a session-authenticated (browser) call.
+func currentToken(r *http.Request) *store.APIToken {
+	tok, _ := r.Context().Value(ctxToken).(*store.APIToken)
+	return tok
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -126,13 +160,80 @@ func pathID(r *http.Request) (int64, error) {
 	return id, nil
 }
 
+// The {id} path segment accepts a human reference as well as a numeric id, so
+// the API takes the same arguments an operator types at the CLI - `acme-root-ca`
+// rather than `3`. Certificates have always worked this way via
+// FindCertificate; these bring CAs, secrets and users into line.
+//
+// A numeric id is always tried first, so an all-digit slug or username can
+// never shadow a real id.
+
+// pathCA resolves {id} to a CA by numeric id, slug or name.
+func (s *Server) pathCA(r *http.Request) (*store.CA, error) {
+	ref := r.PathValue("id")
+	if ref == "" {
+		return nil, badRequest("a certificate authority id, slug or name is required")
+	}
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		if c, err := s.svc.GetCA(r.Context(), id); err == nil {
+			return c, nil
+		}
+	}
+	return s.svc.ResolveCA(r.Context(), ref)
+}
+
+// pathCAID is pathCA for handlers that only need the id.
+func (s *Server) pathCAID(r *http.Request) (int64, error) {
+	c, err := s.pathCA(r)
+	if err != nil {
+		return 0, err
+	}
+	return c.ID, nil
+}
+
+// pathUser resolves {id} to a user by numeric id or username.
+func (s *Server) pathUser(r *http.Request) (*store.User, error) {
+	ref := r.PathValue("id")
+	if ref == "" {
+		return nil, badRequest("a user id or username is required")
+	}
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		if u, err := s.svc.Store().GetUser(r.Context(), id); err == nil {
+			return u, nil
+		}
+	}
+	return s.svc.Store().GetUserByName(r.Context(), ref)
+}
+
 //
 // ---------- identity & stats ----------
 //
 
+// apiMe describes the caller. The "auth" block describes the *credential*
+// rather than its owner, which a remote client needs and cannot infer: an API
+// token's own role caps the effective role (a user-role token owned by an
+// admin acts as a user), and only the token carries an expiry.
 func (s *Server) apiMe(w http.ResponseWriter, r *http.Request) error {
-	writeJSON(w, http.StatusOK, currentUser(r))
+	u := currentUser(r)
+	authInfo := map[string]any{"method": "session", "role": u.Role}
+	if tok := currentToken(r); tok != nil {
+		authInfo = map[string]any{
+			"method":     "token",
+			"token_id":   tok.ID,
+			"token_name": tok.Name,
+			"role":       tok.Role,
+			"expires_at": tok.ExpiresAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, meResponse{User: u, Auth: authInfo})
 	return nil
+}
+
+// meResponse embeds the user so existing consumers see an unchanged shape,
+// with the auth block added alongside.
+type meResponse struct {
+	*store.User
+	Auth map[string]any `json:"auth"`
 }
 
 func (s *Server) apiStats(w http.ResponseWriter, r *http.Request) error {
@@ -153,6 +254,36 @@ type caResponse struct {
 	*store.CA
 	CertPEM string        `json:"cert_pem"`
 	Info    *pki.CertInfo `json:"info,omitempty"`
+
+	// Computed views an API client cannot derive for itself. store.CA's
+	// HasKey/CanIssue/Kind all read KeyEnc, which is json:"-" because it is
+	// the encrypted signing key and must never be served. Without these an
+	// API consumer sees no key field at all and can only conclude that every
+	// authority is a keyless trust anchor. (store.Certificate does not have
+	// this problem - its HasKey is a real serialized field.)
+	HasKey   bool   `json:"has_key"`
+	CanIssue bool   `json:"can_issue"`
+	Kind     string `json:"kind"`
+	Origin   string `json:"origin"`
+	Expired  bool   `json:"expired"`
+	DaysLeft int    `json:"days_left"`
+}
+
+// newCAResponse builds the JSON view of a CA. Every caResponse is constructed
+// here so the computed fields above cannot silently go missing from one
+// endpoint - which is exactly how they came to be missing in the first place.
+func newCAResponse(c *store.CA, info *pki.CertInfo) caResponse {
+	return caResponse{
+		CA:       c,
+		CertPEM:  c.CertPEM,
+		Info:     info,
+		HasKey:   c.HasKey(),
+		CanIssue: c.CanIssue(),
+		Kind:     c.Kind(),
+		Origin:   c.Origin(),
+		Expired:  c.Expired(),
+		DaysLeft: c.DaysLeft(),
+	}
 }
 
 func (s *Server) apiCAList(w http.ResponseWriter, r *http.Request) error {
@@ -162,22 +293,18 @@ func (s *Server) apiCAList(w http.ResponseWriter, r *http.Request) error {
 	}
 	out := make([]caResponse, 0, len(cas))
 	for _, c := range cas {
-		out = append(out, caResponse{CA: c, CertPEM: c.CertPEM})
+		out = append(out, newCAResponse(c, nil))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cas": out, "count": len(out)})
 	return nil
 }
 
 func (s *Server) apiCAGet(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	c, err := s.pathCA(r)
 	if err != nil {
 		return err
 	}
-	c, err := s.svc.GetCA(r.Context(), id)
-	if err != nil {
-		return err
-	}
-	writeJSON(w, http.StatusOK, caResponse{CA: c, CertPEM: c.CertPEM, Info: describeOrNil(c.CertPEM)})
+	writeJSON(w, http.StatusOK, newCAResponse(c, describeOrNil(c.CertPEM)))
 	return nil
 }
 
@@ -191,12 +318,12 @@ func (s *Server) apiCACreate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return badRequestFrom(err)
 	}
-	writeJSON(w, http.StatusCreated, caResponse{CA: c, CertPEM: c.CertPEM, Info: describeOrNil(c.CertPEM)})
+	writeJSON(w, http.StatusCreated, newCAResponse(c, describeOrNil(c.CertPEM)))
 	return nil
 }
 
 func (s *Server) apiCADelete(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}
@@ -208,7 +335,7 @@ func (s *Server) apiCADelete(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) apiCASetDefault(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}
@@ -220,7 +347,7 @@ func (s *Server) apiCASetDefault(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) apiCASetStatus(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}
@@ -238,7 +365,7 @@ func (s *Server) apiCASetStatus(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) apiCAGenerateCRL(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}
@@ -251,7 +378,7 @@ func (s *Server) apiCAGenerateCRL(w http.ResponseWriter, r *http.Request) error 
 }
 
 func (s *Server) apiCADownload(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	id, err := s.pathCAID(r)
 	if err != nil {
 		return err
 	}
@@ -578,14 +705,11 @@ func (s *Server) apiUserCreate(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) apiUserPatch(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	target, err := s.pathUser(r)
 	if err != nil {
 		return err
 	}
-	target, err := s.svc.Store().GetUser(r.Context(), id)
-	if err != nil {
-		return err
-	}
+	id := target.ID
 	var body struct {
 		Role     *string `json:"role"`
 		Disabled *bool   `json:"disabled"`
@@ -632,14 +756,11 @@ func (s *Server) apiUserPatch(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) apiUserDelete(w http.ResponseWriter, r *http.Request) error {
-	id, err := pathID(r)
+	target, err := s.pathUser(r)
 	if err != nil {
 		return err
 	}
-	target, err := s.svc.Store().GetUser(r.Context(), id)
-	if err != nil {
-		return err
-	}
+	id := target.ID
 	if s.isLastAdmin(r, target) {
 		return badRequest("that is the last administrator; it cannot be deleted")
 	}

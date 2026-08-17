@@ -28,16 +28,46 @@ func pathIntParam(r *http.Request, name string) (int64, error) {
 	return v, nil
 }
 
+// secretResponse is the JSON view of a secret. Labels and RotationDue are
+// methods on store.Secret that read LabelsJSON, which is json:"-" - so an API
+// client that only sees the serialized struct gets no labels at all. Adding
+// them here rather than to store.Secret is deliberate: a Labels *field* on
+// that struct would collide with its Labels() method.
+type secretResponse struct {
+	*store.Secret
+	Labels      map[string]string `json:"labels"`
+	RotationDue bool              `json:"rotation_due"`
+}
+
+// newSecretResponse takes the raw *store.Secret because secretResponse's own
+// Labels field shadows the promoted Labels() method it needs to call.
+func newSecretResponse(sec *store.Secret) secretResponse {
+	return secretResponse{Secret: sec, Labels: sec.Labels(), RotationDue: sec.RotationDue()}
+}
+
+func newSecretResponses(secs []*store.Secret) []secretResponse {
+	out := make([]secretResponse, 0, len(secs))
+	for _, sec := range secs {
+		out = append(out, newSecretResponse(sec))
+	}
+	return out
+}
+
+// secretByPathID resolves {id} to a secret by numeric id or by name, so the
+// API takes the same path-like names the CLI and a SecretProviderClass use
+// ("team-a/db/password") as well as a raw id. Numeric ids are tried first so
+// an all-digit secret name cannot shadow one.
 func (s *Server) secretByPathID(r *http.Request) (*store.Secret, error) {
-	id, err := pathID(r)
-	if err != nil {
-		return nil, err
+	ref := r.PathValue("id")
+	if ref == "" {
+		return nil, badRequest("a secret id or name is required")
 	}
-	sec, err := s.vault.GetByID(r.Context(), id)
-	if err != nil {
-		return nil, err
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		if sec, err := s.vault.GetByID(r.Context(), id); err == nil {
+			return sec, nil
+		}
 	}
-	return sec, nil
+	return s.vault.Get(r.Context(), ref)
 }
 
 //
@@ -49,7 +79,7 @@ func (s *Server) apiSecretList(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"secrets": secrets})
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": newSecretResponses(secrets), "count": len(secrets)})
 	return nil
 }
 
@@ -63,7 +93,7 @@ func (s *Server) apiSecretCreate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return badRequest("%v", err)
 	}
-	writeJSON(w, http.StatusCreated, sec)
+	writeJSON(w, http.StatusCreated, newSecretResponse(sec))
 	return nil
 }
 
@@ -72,7 +102,7 @@ func (s *Server) apiSecretGet(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, sec)
+	writeJSON(w, http.StatusOK, newSecretResponse(sec))
 	return nil
 }
 
@@ -105,7 +135,7 @@ func (s *Server) apiSecretUpdate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return badRequest("%v", err)
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, newSecretResponse(updated))
 	return nil
 }
 
@@ -167,7 +197,7 @@ func (s *Server) apiSecretMaterialize(w http.ResponseWriter, r *http.Request) er
 	for i, f := range files {
 		out[i] = fileJSON{Name: f.Name, DataBase64: base64.StdEncoding.EncodeToString(f.Data)}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"secret": sec, "version": version, "files": out})
+	writeJSON(w, http.StatusOK, map[string]any{"secret": newSecretResponse(sec), "version": version, "files": out})
 	return nil
 }
 
@@ -228,7 +258,7 @@ func (s *Server) apiSecretVersionGet(w http.ResponseWriter, r *http.Request) err
 	s.vault.AuditWithIP(r.Context(), currentUser(r).Username, "secret.version_read", sec.Name,
 		"version="+strconv.FormatInt(version, 10), clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"secret": sec, "version": version, "value_base64": base64.StdEncoding.EncodeToString(pt),
+		"secret": newSecretResponse(sec), "version": version, "value_base64": base64.StdEncoding.EncodeToString(pt),
 	})
 	return nil
 }
