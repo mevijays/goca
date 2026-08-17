@@ -40,11 +40,22 @@ either way.
 
 ## Install
 
-From a release archive — both binaries are inside:
+Every release publishes a client-only archive per platform, which is all you
+need if you are administering a goca someone else hosts:
+
+```bash
+curl -fsSLO https://github.com/mevijays/goca/releases/latest/download/gocactl_v1.0.0_linux_amd64.tar.gz
+tar -xzf gocactl_v1.0.0_linux_amd64.tar.gz && sudo install gocactl /usr/local/bin/
+```
+
+The `goca_<version>_<os>_<arch>` archive contains **both** binaries, so if you
+run the server you already have a matching client:
 
 ```bash
 tar -xzf goca_v1.0.0_linux_amd64.tar.gz && sudo install gocactl /usr/local/bin/
 ```
+
+`checksums.txt` on the release page covers every asset.
 
 From source:
 

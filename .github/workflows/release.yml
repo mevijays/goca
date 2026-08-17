@@ -3,11 +3,17 @@ name: Release
 # Fires on any tag matching vX.Y.Z (optionally with a -rc1 style suffix), e.g.
 #   git tag v1.2.3 && git push origin v1.2.3
 #
-# Builds a binary for every supported OS/arch, publishes them as a GitHub
-# Release, and builds+pushes a multi-arch Docker image to
-# ghcr.io/mevijays/goca tagged with the version. goca has no cgo dependency
-# (the SQLite driver is pure Go), so every binary and every image platform is
-# cross-compiled natively - no QEMU emulation, no per-OS runners needed.
+# Builds both binaries - goca (server + local CLI) and gocactl (remote client)
+# - for every supported OS/arch, publishes them as a GitHub Release, and
+# builds+pushes a multi-arch Docker image to ghcr.io/mevijays/goca tagged with
+# the version. Neither binary has a cgo dependency (the SQLite driver is pure
+# Go), so every binary and every image platform is cross-compiled natively -
+# no QEMU emulation, no per-OS runners needed.
+#
+# Each platform yields two release assets:
+#   goca_<version>_<os>_<arch>.tar.gz      both binaries
+#   gocactl_<version>_<os>_<arch>.tar.gz   the client on its own
+# (.zip on Windows), plus a single checksums.txt covering every asset.
 
 on:
   push:
@@ -80,13 +86,30 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          NAME="goca_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          BOTH="goca_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          CLIENT="gocactl_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p "dist"
+
+          # Two archives per platform, deliberately:
+          #
+          #   goca_...     both binaries, for whoever runs the server. Keeping
+          #                gocactl in here means a server operator always has a
+          #                client of exactly the matching version.
+          #   gocactl_...  the client alone (~7 MB against ~32 MB), for the far
+          #                more common case of someone who only administers a
+          #                goca they do not host.
+          #
+          # The goca_ names are unchanged, so existing install scripts and
+          # documented download URLs keep working.
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            (cd build && zip -j "../dist/${NAME}.zip" goca.exe gocactl.exe)
+            (cd build && zip -j "../dist/${BOTH}.zip" goca.exe gocactl.exe)
+            (cd build && zip -j "../dist/${CLIENT}.zip" gocactl.exe)
           else
-            tar -C build -czf "dist/${NAME}.tar.gz" goca gocactl
+            tar -C build -czf "dist/${BOTH}.tar.gz" goca gocactl
+            tar -C build -czf "dist/${CLIENT}.tar.gz" gocactl
           fi
+
+          ls -lh dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
