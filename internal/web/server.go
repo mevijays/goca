@@ -40,6 +40,9 @@ type Server struct {
 	// requesting pod's behalf. nil when CSIConfig.Enabled is false - the
 	// vault/fetch handler reports that plainly rather than panicking.
 	k8s *k8sauth.Verifier
+	// logins throttles the two endpoints that check a password - see
+	// ratelimit.go.
+	logins *failCounter
 }
 
 // Options tune the HTTP listener at run time, overriding the config file.
@@ -68,7 +71,7 @@ func NewServer(svc *ca.Service, mgr *auth.Manager, logger *slog.Logger) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("build Kubernetes ServiceAccount token verifier: %w", err)
 	}
-	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s}, nil
+	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s, logins: newFailCounter()}, nil
 }
 
 // buildK8sVerifier constructs the CSI provider's token verifier from
@@ -102,14 +105,55 @@ func buildK8sVerifier(svc *ca.Service) (*k8sauth.Verifier, error) {
 	})
 }
 
+// routeMux is a http.ServeMux that also remembers the patterns registered on
+// it. ServeMux itself does not expose them, and the OpenAPI coverage test
+// needs the real route table rather than a hand-maintained list that would
+// drift out of date exactly as the spec did.
+type routeMux struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func newRouteMux() *routeMux { return &routeMux{ServeMux: http.NewServeMux()} }
+
+func (m *routeMux) Handle(pattern string, h http.Handler) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.Handle(pattern, h)
+}
+
+func (m *routeMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.HandleFunc(pattern, h)
+}
+
+// routePatterns returns every pattern Handler() registers, for tests.
+func (s *Server) routePatterns() []string {
+	mux := newRouteMux()
+	s.routes(mux)
+	return mux.patterns
+}
+
 // Handler builds the complete route table.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
+	mux := newRouteMux()
+	s.routes(mux)
+	return s.recoverer(s.logRequests(securityHeaders(mux)))
+}
+
+// routes registers every pattern. Split from Handler so tests can enumerate
+// the route table without building the middleware stack.
+func (s *Server) routes(mux *routeMux) {
 
 	// ---- static assets & public distribution endpoints ----
 	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	// Unauthenticated by design: this endpoint *is* the credential check, and
+	// it is the bootstrap for POST /api/v1/tokens, which is itself behind
+	// apiAuth. Registered here, above the api/apiAdmin helpers, so it cannot
+	// be mistaken for an authenticated route. Throttled per username and per
+	// client address - see ratelimit.go.
+	mux.Handle("POST /api/v1/auth/login", s.apiPublic(s.apiAuthLogin))
 	// Anonymous trust-anchor distribution, so machines can fetch the root and
 	// CRL without credentials. The file name carries the CA slug plus an
 	// extension (acme-root-ca.crt), which ServeMux cannot split for us.
@@ -303,8 +347,6 @@ func (s *Server) Handler() http.Handler {
 	// (internal/k8sauth) rather than a goca session or API token - see
 	// api_vault_fetch.go.
 	mux.Handle("POST /api/v1/vault/fetch", s.apiAuthK8s(s.apiVaultFetch))
-
-	return s.recoverer(s.logRequests(securityHeaders(mux)))
 }
 
 // Run starts the HTTP server and blocks until the context is cancelled.

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -208,8 +209,18 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	next := r.FormValue("next")
 
+	// Throttled on the same counters as the API login endpoint, so an
+	// attacker cannot sidestep the limit by switching between the two.
+	if wait := s.loginThrottle(username, clientIP(r)); wait > 0 {
+		s.svc.AuditWithIP(r.Context(), username, "auth.login_throttled", username, "via=form", clientIP(r))
+		s.renderLogin(w, r, fmt.Sprintf(
+			"Too many failed sign-in attempts. Please try again in %d seconds.", int(wait.Seconds())+1), next)
+		return
+	}
+
 	u, err := s.auth.Authenticate(r.Context(), username, password)
 	if err != nil {
+		s.loginFailed(username, clientIP(r))
 		msg := "Invalid username or password."
 		switch {
 		case errors.Is(err, auth.ErrDisabled):
@@ -224,6 +235,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, r, msg, next)
 		return
 	}
+	s.loginSucceeded(username, clientIP(r))
 
 	s.finishLogin(w, r, u, next)
 }

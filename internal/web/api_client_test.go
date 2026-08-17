@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/mevijays/goca/internal/store"
@@ -182,5 +184,43 @@ func TestAPIMeDescribesTheCredential(t *testing.T) {
 	if authInfo["role"] != store.RoleUser {
 		t.Errorf("auth.role = %v for a user-scoped token, want user - the effective "+
 			"role must reflect the token, not its owner", authInfo["role"])
+	}
+}
+
+// TestP12PasswordFromHeader covers the PKCS#12 export password moving out of
+// the query string, where it would otherwise be recorded by any reverse proxy
+// in front of goca, plus shell and browser history.
+func TestP12PasswordFromHeader(t *testing.T) {
+	h := newHarness(t)
+	tok := h.token(store.RoleAdmin)
+
+	rec, body := h.apiJSON(http.MethodPost, "/api/v1/certificates",
+		`{"subject":{"common_name":"p12.test"},"key_type":"ec-p256","days":30}`, tok)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("issue = %d", rec.Code)
+	}
+	cert, _ := body["certificate"].(map[string]any)
+	id := int64(cert["id"].(float64))
+
+	const pw = "bundle-passw0rd"
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/v1/certificates/%d/download/bundle.p12", id), nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("X-Bundle-Password", pw)
+	got := h.do(req)
+	if got.Code != http.StatusOK {
+		t.Fatalf("p12 download with a header password = %d: %s", got.Code, got.Body.String())
+	}
+	if got.Body.Len() == 0 {
+		t.Error("empty PKCS#12 bundle")
+	}
+
+	// The query parameter still works, so the portal's existing links keep
+	// functioning.
+	req = httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/v1/certificates/%d/download/bundle.p12?password=%s", id, pw), nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	if got := h.do(req); got.Code != http.StatusOK {
+		t.Errorf("p12 download with a query password = %d (must stay supported)", got.Code)
 	}
 }

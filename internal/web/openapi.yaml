@@ -63,8 +63,376 @@ tags:
     description: 🔒 admin
   - name: ACME access
     description: 🔒 admin — manage EAB credentials and see who has registered. The ACME protocol itself is unauthenticated at /acme/*.
+  - name: Authentication
+    description: Exchanging a password for an API token. The only endpoint here that needs no credential of its own.
+  - name: Secrets
+    description: 🔒 admin — the secret manager. See SECRETS.md for the design, key custody and threat model.
+  - name: Kubernetes CSI
+    description: The workload-facing endpoint the Secrets Store CSI Driver provider calls. Authenticated by a Kubernetes ServiceAccount token, not a goca token.
 
 paths:
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Exchange a username and password for an API token
+      description: |
+        The bootstrap for everything else here. Every other `/api/v1` endpoint
+        needs a bearer token, and `POST /api/v1/tokens` — the endpoint that
+        mints one — is itself behind that check, so without this the only ways
+        to obtain a token are `goca token create` on the server host or a
+        browser session. `gocactl login` uses this.
+
+        Authenticates against local accounts and LDAP. On an OIDC-only server
+        there is no password to check and this returns 400; sign in to the
+        portal and create a token under Settings instead.
+
+        The token it returns always expires — `days` may not be used to request
+        a permanent credential, unlike a deliberate `goca token create` on the
+        server. Failed attempts are throttled per username and per client
+        address.
+      security: []   # deliberately unauthenticated - this endpoint IS the credential check
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                token_name:
+                  type: string
+                  maxLength: 64
+                  description: "label for the minted token, shown in `goca token list`; gocactl sends gocactl@<hostname>"
+                days:
+                  type: integer
+                  description: "lifetime; omitted or 0 uses the server default (security.api_login_token_ttl, 30d). Capped by security.api_login_token_max_days (90). Never means 'no expiry'."
+            example:
+              username: alice
+              password: "hunter2"
+              token_name: "gocactl@laptop"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: "shown once; only a hash is stored" }
+                  token_id: { type: integer, description: "use to self-revoke via DELETE /tokens/{id}" }
+                  token_name: { type: string }
+                  expires_at: { type: string, format: date-time, description: "never null" }
+                  role: { type: string, enum: [user, admin], description: "the token's effective role" }
+                  user: { $ref: "#/components/schemas/User" }
+                  server_version: { type: string }
+        "400": { description: "missing fields, a bad days value, or password login is disabled on this server" }
+        "401": { description: "invalid username or password (identical for an unknown user, so accounts cannot be enumerated)" }
+        "403": { description: "the account is disabled" }
+        "429":
+          description: Too many failed attempts
+          headers:
+            Retry-After: { schema: { type: integer }, description: seconds to wait }
+        "502": { description: "the directory could not be reached" }
+
+  /secrets:
+    get:
+      tags: [Secrets]
+      summary: List secrets
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string, enum: [kv, file, certificate] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secrets: { type: array, items: { $ref: "#/components/schemas/Secret" } }
+                  count: { type: integer }
+    post:
+      tags: [Secrets]
+      summary: Create a secret
+      description: Metadata only. A kv/file secret has no version until you POST one; a certificate secret is complete immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSecretInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "400": { description: Invalid input }
+
+  /secrets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+    get:
+      tags: [Secrets]
+      summary: Get one secret
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "404": { description: Not found }
+    patch:
+      tags: [Secrets]
+      summary: Update description, labels or rotation policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+                labels: { type: object, additionalProperties: { type: string } }
+                rotation_days: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+    delete:
+      tags: [Secrets]
+      summary: Delete a secret, every version and every binding
+      responses:
+        "200": { description: Deleted }
+
+  /secrets/{id}/disable:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+    post:
+      tags: [Secrets]
+      summary: Disable or re-enable a secret
+      description: A disabled secret is refused by reads and by CSI mounts, without destroying any version.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disabled: { type: boolean, default: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: { type: boolean }
+
+  /secrets/{id}/materialize:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+    get:
+      tags: [Secrets]
+      summary: Resolve a secret's current content into files
+      description: |
+        One file (`value`, or the stored content type) for a kv/file secret; the
+        `tls.crt`/`tls.key`/`ca.crt` triad for a certificate secret, resolved
+        fresh from the linked certificate. This is the same resolution a CSI
+        Mount performs. `version` changes exactly when the content does.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { $ref: "#/components/schemas/Secret" }
+                  version: { type: string, description: "payload digest, or cert:<serial> for a certificate secret" }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        data_base64: { type: string }
+
+  /secrets/{id}/versions:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+    get:
+      tags: [Secrets]
+      summary: List a secret's versions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions: { type: array, items: { $ref: "#/components/schemas/SecretVersion" } }
+    post:
+      tags: [Secrets]
+      summary: Write a new version
+      description: Always appends. The previous version is retained until explicitly destroyed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value_base64]
+              properties:
+                value_base64: { type: string }
+                content_type: { type: string, description: "a file name hint for file secrets" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretVersion" }
+
+  /secrets/{id}/versions/{version}:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+      - in: path
+        name: version
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Secrets]
+      summary: Read one specific version
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { $ref: "#/components/schemas/Secret" }
+                  version: { type: integer }
+                  value_base64: { type: string }
+        "400": { description: "the version was destroyed, or the secret is disabled" }
+
+  /secrets/{id}/versions/{version}/destroy:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+      - in: path
+        name: version
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Secrets]
+      summary: Permanently scrub one version's ciphertext
+      description: Crypto-shredding. The row and its version number remain so history stays intact; the content is unrecoverable.
+      responses:
+        "200": { description: Destroyed }
+
+  /secrets/{id}/bindings:
+    parameters:
+      - $ref: "#/components/parameters/SecretRef"
+    get:
+      tags: [Secrets]
+      summary: List a secret's Kubernetes bindings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bindings: { type: array, items: { $ref: "#/components/schemas/SecretBinding" } }
+    post:
+      tags: [Secrets]
+      summary: Authorize a Kubernetes namespace/ServiceAccount to read this secret
+      description: Bindings are the entire authorization decision for the CSI provider. Both fields are glob patterns; "*" matches anything.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                k8s_namespace: { type: string, default: "*" }
+                k8s_service_account: { type: string, default: "*" }
+                expires_in_days: { type: integer, description: "0 = never" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretBinding" }
+
+  /secret-bindings/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [Secrets]
+      summary: Revoke a binding
+      responses:
+        "200": { description: Deleted }
+
+  /vault/fetch:
+    post:
+      tags: [Kubernetes CSI]
+      summary: Fetch bound secrets for a Kubernetes workload
+      description: |
+        Called by `goca run csi-provider` on behalf of a specific pod, never by
+        the pod directly. Authenticated by that pod's own projected
+        ServiceAccount token in the `Authorization` header — not a goca API
+        token — and authorized against each secret's bindings.
+
+        A secret that does not exist and one that exists but is not bound to the
+        caller return an identical error, so this cannot be used to enumerate
+        secret names.
+      security: []   # authenticated by a Kubernetes ServiceAccount token instead
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secrets]
+              properties:
+                secrets: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: OK — inspect each result's `error` field; one failure does not fail the request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  identity: { type: string, example: "system:serviceaccount:team-a:web" }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        secret_name: { type: string }
+                        version: { type: string }
+                        files:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name: { type: string }
+                              data_base64: { type: string }
+                        error: { type: string }
+        "401": { description: "the ServiceAccount token was rejected" }
+        "503": { description: "the Kubernetes CSI integration is not enabled on this server" }
+
   /health:
     get:
       tags: [General]
@@ -1056,6 +1424,14 @@ components:
       required: true
       schema: { type: string }
       description: Numeric id or hex serial.
+    SecretRef:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: >
+        Numeric id, or the secret's path-like name. A name containing slashes
+        must be percent-encoded (team-a%2Fdb%2Fpassword).
 
   schemas:
     StatusOK:
@@ -1160,6 +1536,15 @@ components:
         external: { type: boolean, description: "true if imported rather than created by goca" }
         subject_key_id: { type: string }
         authority_key_id: { type: string }
+        # Computed server-side. The encrypted signing key is never serialized,
+        # so an API client cannot work these out for itself - without them
+        # every authority looks like a keyless trust anchor.
+        has_key: { type: boolean, description: "goca holds this authority's private key and can sign with it" }
+        can_issue: { type: boolean, description: "has a key, is active, is not expired, and has a certificate" }
+        kind: { type: string, enum: [root, intermediate, "trust anchor", "pending signature"] }
+        origin: { type: string, enum: [goca, imported] }
+        expired: { type: boolean }
+        days_left: { type: integer, description: "negative once expired" }
     CAWithPEM:
       allOf:
         - $ref: "#/components/schemas/CA"
@@ -1333,4 +1718,60 @@ components:
         certificate_id: { type: integer, nullable: true }
         error: { type: string }
         expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    Secret:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, description: "path-like and unique, e.g. team-a/db/password" }
+        type: { type: string, enum: [kv, file, certificate] }
+        description: { type: string }
+        cert_id: { type: integer, nullable: true, description: "set only for certificate secrets" }
+        current_version: { type: integer, description: "0 for a certificate secret, which has no versions of its own" }
+        rotation_days: { type: integer, description: "advisory; flags the secret 'rotation due' in lists" }
+        disabled: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        # Computed server-side: the stored labels are a JSON blob that is not
+        # itself serialized, so without this an API client sees no labels.
+        labels: { type: object, additionalProperties: { type: string } }
+        rotation_due: { type: boolean }
+
+    CreateSecretInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [kv, file, certificate], default: kv }
+        description: { type: string }
+        labels: { type: object, additionalProperties: { type: string } }
+        rotation_days: { type: integer }
+        cert_id: { type: integer, description: "required, and only valid, when type is certificate" }
+
+    SecretVersion:
+      type: object
+      description: One immutable revision. The sealed payload is never serialized.
+      properties:
+        id: { type: integer }
+        secret_id: { type: integer }
+        version: { type: integer }
+        payload_sha256: { type: string, description: "digest of the plaintext; doubles as the CSI object version" }
+        size_bytes: { type: integer }
+        content_type: { type: string }
+        destroyed: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    SecretBinding:
+      type: object
+      properties:
+        id: { type: integer }
+        secret_id: { type: integer }
+        secret_name: { type: string }
+        k8s_namespace: { type: string, description: "glob pattern; * matches anything" }
+        k8s_service_account: { type: string, description: "glob pattern; * matches anything" }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_by: { type: string }
         created_at: { type: string, format: date-time }

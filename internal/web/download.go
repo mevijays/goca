@@ -43,6 +43,25 @@ func writeZip(w http.ResponseWriter, filename string, entries []zipEntry) {
 	sendFile(w, filename, "application/zip", buf.Bytes())
 }
 
+// bundlePassword reads the PKCS#12 export password, preferring the places it
+// does not end up in a log.
+//
+// A query string is the worst of the three: it survives in reverse-proxy access
+// logs, shell history and browser history. (goca's own request log is already
+// clear - logRequests records r.URL.Path, not RequestURI - so this is about
+// everything in front of and around it.) The header is what API clients should
+// use; the query parameter stays supported because the portal's existing
+// download links are built that way.
+func bundlePassword(r *http.Request) string {
+	if pw := r.Header.Get("X-Bundle-Password"); pw != "" {
+		return pw
+	}
+	if pw := r.PostFormValue("password"); pw != "" {
+		return pw
+	}
+	return r.URL.Query().Get("password")
+}
+
 func sendFile(w http.ResponseWriter, filename, contentType string, data []byte) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
@@ -226,8 +245,7 @@ func (s *Server) serveCertDownload(w http.ResponseWriter, r *http.Request, c *st
 		}
 		sendFile(w, base+".csr", "application/pkcs10", []byte(c.CSRPEM))
 	case "bundle.p12", "bundle.pfx":
-		password := r.URL.Query().Get("password")
-		p12, err := s.svc.CertBundleP12(r.Context(), c, password)
+		p12, err := s.svc.CertBundleP12(r.Context(), c, bundlePassword(r))
 		if err != nil {
 			s.renderError(w, r, http.StatusBadRequest, "Cannot build PKCS#12 bundle", err.Error())
 			return true

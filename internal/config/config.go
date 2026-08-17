@@ -95,6 +95,16 @@ type SecurityConfig struct {
 	SessionTTL time.Duration `yaml:"session_ttl"`
 	// SecureCookies forces the Secure flag on cookies (enable behind TLS).
 	SecureCookies bool `yaml:"secure_cookies"`
+
+	// APILoginTokenTTL is how long a token minted by POST /api/v1/auth/login
+	// lasts when the caller does not ask for a specific lifetime - the
+	// `gocactl login` path. APILoginTokenMaxDays caps what a caller may ask
+	// for. Both exist because a password grant must never be able to produce
+	// a non-expiring token: auth.IssueAPIToken treats a zero TTL as "never
+	// expires", which is fine for a deliberate `goca token create` on the
+	// server but not for anything a leaked password could reach.
+	APILoginTokenTTL     time.Duration `yaml:"api_login_token_ttl,omitempty"`
+	APILoginTokenMaxDays int           `yaml:"api_login_token_max_days,omitempty"`
 }
 
 // AuthMode selects whether local password login is offered alongside
@@ -431,6 +441,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Security.SessionTTL == 0 {
 		c.Security.SessionTTL = 8 * time.Hour
+	}
+	if c.Security.APILoginTokenTTL == 0 {
+		c.Security.APILoginTokenTTL = 30 * 24 * time.Hour
+	}
+	if c.Security.APILoginTokenMaxDays == 0 {
+		c.Security.APILoginTokenMaxDays = 90
 	}
 	switch c.Auth.Mode {
 	case AuthModeLocal, AuthModeLDAP, AuthModeBoth:
