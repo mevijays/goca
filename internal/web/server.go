@@ -95,6 +95,34 @@ func buildK8sVerifier(svc *ca.Service) (*k8sauth.Verifier, error) {
 	if audience == "" {
 		audience = defaultCSIAudience
 	}
+	// `csi.enabled: true` on its own is the obvious thing to try, and it is not
+	// enough: there is no safe default for how ServiceAccount tokens get
+	// verified, so one of the two paths has to be chosen deliberately. k8sauth
+	// is a generic package and does not know the YAML key names, so name them
+	// here rather than leaving the operator to read the source.
+	if cfg.IssuerURL == "" {
+		switch {
+		case cfg.APIServerURL == "":
+			return nil, errors.New(
+				"csi.enabled is true but no way to verify ServiceAccount tokens is configured. " +
+					"Set csi.issuer_url to the cluster's ServiceAccount issuer (EKS/GKE/AKS, or any " +
+					"cluster whose issuer is publicly reachable), or csi.api_server_url plus " +
+					"csi.reviewer_token and csi.ca_cert to use the TokenReview API instead (kind, " +
+					"most on-prem clusters). Find the issuer with: " +
+					"kubectl get --raw /.well-known/openid-configuration. " +
+					"Full walkthrough: docs/kubernetes/csi.md")
+		case reviewerToken == "":
+			// Half-configured TokenReview is the easy mistake on the on-prem
+			// path, and without this it falls through to a message that does
+			// not mention the one key that is actually missing.
+			return nil, errors.New(
+				"csi.api_server_url is set but csi.reviewer_token is empty, so goca cannot call " +
+					"the TokenReview API. The token belongs to a ServiceAccount bound to " +
+					"system:auth-delegator; k8s-demo/csi/rbac.yaml creates one. Get it with: " +
+					"kubectl create token goca-server-token-reviewer -n goca-csi --duration=8760h. " +
+					"Full walkthrough: docs/kubernetes/csi.md")
+		}
+	}
 	return k8sauth.New(k8sauth.Config{
 		IssuerURL:          cfg.IssuerURL,
 		Audience:           audience,
