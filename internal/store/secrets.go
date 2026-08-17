@@ -11,7 +11,7 @@ import (
 // with the hybrid ML-KEM-768 + X25519 envelope in internal/pqcrypt, and
 // exposed to Kubernetes workloads through the Secrets Store CSI Driver
 // provider. See internal/vault for the service layer that calls these
-// queries, and SECRETS.md for the operator-facing story.
+// queries, and docs/secrets.md for the operator-facing story.
 
 //
 // ---------- secrets ----------
@@ -191,7 +191,7 @@ type SealFunc func(secretID int64, version int) (SealedVersion, error)
 //
 // The version number is not knowable until the store reserves it here, and
 // internal/pqcrypt's AAD binds every ciphertext to "secretID|version" (see
-// SECRETS.md), so encryption cannot happen before this method decides the
+// docs/secrets.md), so encryption cannot happen before this method decides the
 // version - sealing ahead of time and merely passing the result in would
 // let a concurrent writer race the reservation and silently persist a
 // ciphertext bound to the wrong version, which would then fail to decrypt.

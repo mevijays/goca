@@ -15,7 +15,7 @@ import (
 
 // This file is the portal side of goca's secret manager - admin-only, like
 // its REST API counterpart in api_secrets.go, which internal/vault.Service
-// backs identically. See SECRETS.md for the design and threat model.
+// backs identically. See docs/secrets.md for the design and threat model.
 
 //
 // ---------- list + create ----------

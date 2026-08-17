@@ -2,12 +2,12 @@
 
 Complete reference for the `goca` command line: every command, every flag,
 every default. For getting a server running in the first place, see
-[SETUP.md](SETUP.md). For an overview of what goca does, see
-[README.md](README.md).
+[SETUP.md](setup.md). For an overview of what goca does, see
+[README.md](index.md).
 
 Everything the CLI does is also available in the REST API and the web
 portal — they call the same service layer, so nothing here is CLI-only
-capability. The `README.md` [API table](README.md#the-rest-api) maps CLI
+capability. The `README.md` [API table](index.md#the-rest-api) maps CLI
 commands to their `/api/v1` equivalents.
 
 ## Contents
@@ -20,7 +20,7 @@ commands to their `/api/v1` equivalents.
 - [`goca ca`](#goca-ca) — authorities, including external-CA integration
 - [`goca cert`](#goca-cert) — issuance, lifecycle, revocation
 - [`goca csr`](#goca-csr)
-- [`goca inspect`](#goca-inspect)
+- [`goca inspect`](#goca-inspect-file-)
 - [`goca user`](#goca-user)
 - [`goca token`](#goca-token)
 - [`goca ldap`](#goca-ldap)
@@ -31,7 +31,7 @@ commands to their `/api/v1` equivalents.
 - [Revocation reasons](#revocation-reasons)
 - [Referring to a CA or a certificate](#referring-to-a-ca-or-a-certificate)
 - [Reading and writing PEM: stdin/stdout conventions](#reading-and-writing-pem-stdinstdout-conventions)
-- [Scripting with --json](#scripting-with---json)
+- [Scripting with --json](#scripting-with-json)
 - [Exit codes](#exit-codes)
 
 ---
@@ -43,7 +43,7 @@ subcommand's own flags (cobra accepts either):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-c, --config` | *(auto-discovered)* | path to `config.yaml` — see [config discovery](SETUP.md#the-config-file) |
+| `-c, --config` | *(auto-discovered)* | path to `config.yaml` — see [config discovery](setup.md#the-config-file) |
 | `--json` | off | emit JSON instead of a formatted table/summary |
 | `-v, --verbose` | off | verbose logging to stderr |
 | `--actor` | *(current OS user)* | name recorded in the audit log for this invocation |
@@ -51,7 +51,7 @@ subcommand's own flags (cobra accepts either):
 **`--json`** works on nearly every command — reads return the same structures
 the REST API returns, and most writes echo back what was created or changed.
 This makes the CLI usable from scripts without going through the HTTP API at
-all. See [Scripting with --json](#scripting-with---json).
+all. See [Scripting with --json](#scripting-with-json).
 
 **`--actor`** defaults to `$SUDO_USER` (if running under sudo) or `$USER`,
 suffixed with `(cli)`, e.g. `vijay (cli)`. Override it when running goca from
@@ -74,7 +74,7 @@ at all non-interactively without `--yes`.
 
 Generates the config file, master/session keys, database, and admin account.
 Full reference, including every flag, is in
-[SETUP.md](SETUP.md#unattended-setup) since it's fundamentally a setup-time
+[SETUP.md](setup.md#unattended-setup) since it's fundamentally a setup-time
 operation, not a day-to-day one.
 
 ```bash
@@ -100,8 +100,8 @@ goca run web [flags]
 | `--tls-key` | — | private key for `--tls-cert` |
 
 Runs until `SIGINT`/`SIGTERM`, then shuts down gracefully. See
-[SETUP.md](SETUP.md#running-the-portal) and
-[SETUP.md — TLS](SETUP.md#tls).
+[SETUP.md](setup.md#running-the-portal) and
+[SETUP.md — TLS](setup.md#tls).
 
 ---
 
@@ -126,7 +126,7 @@ goca install web [flags]
 | `--print` | off | print the unit file instead of installing it |
 | `--tls-cert` / `--tls-key` | — | serve HTTPS with this certificate |
 
-Full walkthrough, including permission requirements: [SETUP.md](SETUP.md#installing-as-a-service).
+Full walkthrough, including permission requirements: [SETUP.md](setup.md#installing-as-a-service).
 
 ## `goca uninstall web`
 
@@ -691,7 +691,7 @@ openssl s_client -connect example.com:443 </dev/null 2>/dev/null | goca inspect 
 The web portal has a fuller equivalent at `/tools/ssl` (the **SSL utility**
 nav tab) that also handles private keys and checks whether a pasted
 certificate and key match. It needs no account — see
-[README.md — The SSL utility](README.md#the-ssl-utility).
+[README.md — The SSL utility](index.md#the-ssl-utility).
 
 ---
 
@@ -814,7 +814,7 @@ are the whole trust decision. The protocol itself (what cert-manager or any
 other ACME client actually talks to) is served at `/acme/*` by `goca run
 web` — there's no CLI equivalent for issuing through ACME, since that's the
 client's job, not an operator's. Full walkthrough, including a cert-manager
-`ClusterIssuer` example: **[ACME-EAB.md](ACME-EAB.md)**.
+`ClusterIssuer` example: **[ACME-EAB.md](acme-eab.md)**.
 
 ### `goca acme eab create <name>`
 

@@ -12,7 +12,7 @@ import (
 // EAB-only: an EAB credential is the entire trust decision an operator makes,
 // so there is no HTTP-01/DNS-01 challenge machinery here - authorizations are
 // created already "valid". See internal/acme for the protocol implementation
-// and ACME-EAB.md for the operator-facing story.
+// and docs/acme-eab.md for the operator-facing story.
 
 // ACME order/account/authorization/challenge statuses (RFC 8555 §7.1.6).
 const (

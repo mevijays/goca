@@ -15,7 +15,7 @@ import (
 // Link), and translating internal/acme's *acme.Problem values into
 // application/problem+json responses. None of it decides *what* an ACME
 // request is allowed to do - that is entirely internal/acme/service.go. See
-// ACME-EAB.md for the operator-facing story.
+// docs/acme-eab.md for the operator-facing story.
 
 const (
 	contentTypeJOSE     = "application/jose+json"

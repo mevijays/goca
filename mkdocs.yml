@@ -1,0 +1,39 @@
+site_name: goca
+site_description: A self-hosted certificate authority in a single Go binary
+site_url: https://mevijays.github.io/goca/
+repo_url: https://github.com/mevijays/goca
+repo_name: mevijays/goca
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  hljs_languages:
+    - bash
+    - yaml
+    - go
+  navigation_depth: 3
+  collapse_navigation: false
+
+nav:
+  - Home: index.md
+  - Setup: setup.md
+  - CLI Reference: usage.md
+  - ACME (cert-manager): acme-eab.md
+  - Secret Manager: secrets.md
+  - Kubernetes:
+      - cert-manager demo: kubernetes/cert-manager.md
+      - CSI driver demo: kubernetes/csi.md
+
+markdown_extensions:
+  - fenced_code
+  - tables
+  - toc:
+      permalink: true
+  - admonition
+  - codehilite
+
+strict: false

@@ -34,7 +34,7 @@ info:
 
     The ACME (RFC 8555) protocol endpoints under `/acme/*` are a separate,
     self-authenticating protocol (JWS/EAB, not bearer tokens) and are not
-    part of this spec — see [ACME-EAB.md](/settings/acme) and the `/acme/eab`
+    part of this spec — see [docs/acme-eab.md](/settings/acme) and the `/acme/eab`
     endpoints below, which manage *access* to that protocol rather than
     speaking it.
   license:
@@ -915,7 +915,7 @@ paths:
     post:
       tags: [ACME access]
       summary: Create an EAB credential
-      description: The HMAC key is returned once — only its encrypted form is stored. See ACME-EAB.md.
+      description: The HMAC key is returned once — only its encrypted form is stored. See docs/acme-eab.md.
       requestBody:
         required: true
         content:

@@ -5,11 +5,11 @@ and an embedded web portal are the same program, backed by one SQLite file by
 default, or PostgreSQL when you want a server-based database.
 
 **Documentation:**
-[SETUP.md](docs/setup.md) — building, `goca setup`, running, installing as a
+[SETUP.md](setup.md) — building, `goca setup`, running, installing as a
 service, TLS, LDAP, upgrading, backups ·
-[USAGE.md](docs/usage.md) — the complete CLI reference, every command and flag ·
-[ACME-EAB.md](docs/acme-eab.md) — ACME for cert-manager and other clients, EAB-only ·
-[SECRETS.md](docs/secrets.md) — the secret manager: post-quantum envelope encryption,
+[USAGE.md](usage.md) — the complete CLI reference, every command and flag ·
+[ACME-EAB.md](acme-eab.md) — ACME for cert-manager and other clients, EAB-only ·
+[SECRETS.md](secrets.md) — the secret manager: post-quantum envelope encryption,
 key custody, and mounting secrets into Kubernetes with the CSI provider ·
 this file — what goca is and does, the REST API, and how it's built.
 
@@ -24,10 +24,10 @@ this file — what goca is and does, the REST API, and how it's built.
   produces a file you can scp anywhere.
 - **SQLite or PostgreSQL.** `goca setup` defaults to a SQLite file, zero extra
   moving parts. Point it at PostgreSQL instead when you want a server-based
-  database — see [SETUP.md](docs/setup.md#database).
+  database — see [SETUP.md](setup.md#database).
 - **Everything in three places.** Every capability exists in the web UI, the REST
   API and the CLI, because all three call the same service layer
-  ([internal/ca/service.go](internal/ca/service.go)). Nothing is CLI-only or
+  ([internal/ca/service.go](https://github.com/mevijays/goca/blob/main/internal/ca/service.go)). Nothing is CLI-only or
   API-only.
 - **Its own root, or someone else's.** goca can be a self-signed root CA, or run
   as an intermediate underneath a CA you already operate — pfSense, a corporate
@@ -47,13 +47,13 @@ this file — what goca is and does, the REST API, and how it's built.
 - **ACME for private domains.** An RFC 8555 server, External Account Binding
   only — no HTTP-01/DNS-01 challenge is ever validated, which is what makes it
   usable for internal zones cert-manager and friends could never prove
-  ownership of publicly. See [ACME-EAB.md](docs/acme-eab.md), or
-  [k8s-demo/](docs/kubernetes/cert-manager.md) for a runnable cert-manager walkthrough.
+  ownership of publicly. See [ACME-EAB.md](acme-eab.md), or
+  [k8s-demo/](kubernetes/cert-manager.md) for a runnable cert-manager walkthrough.
 - **A secret manager, sealed with post-quantum envelope encryption.** Named,
   versioned secrets — and certificates goca itself issued, materialized fresh on
   every read — mountable straight into Kubernetes pods via a Secrets Store CSI
-  Driver provider, with no plaintext ever touching etcd. See [SECRETS.md](docs/secrets.md),
-  or [k8s-demo/csi/](docs/kubernetes/csi.md) for a runnable walkthrough.
+  Driver provider, with no plaintext ever touching etcd. See [SECRETS.md](secrets.md),
+  or [k8s-demo/csi/](kubernetes/csi.md) for a runnable walkthrough.
 
 ## Quick start
 
@@ -65,7 +65,7 @@ go build -o goca .
 
 Open `http://localhost:8080` and sign in. For the full setup walkthrough
 (unattended installs, LDAP, TLS, running as a service) see
-**[SETUP.md](docs/setup.md)**.
+**[SETUP.md](setup.md)**.
 
 ### Or with Docker
 
@@ -80,12 +80,12 @@ docker run -d --name goca -p 8080:8080 -v goca-data:/data ghcr.io/mevijays/goca:
 ```
 
 The image is published from every tagged release by
-[`.github/workflows/release.yml`](.github/workflows/release.yml) — see the
-[Dockerfile](Dockerfile) for what's in it (a single static ~28 MB binary on
+[`.github/workflows/release.yml`](https://github.com/mevijays/goca/blob/main/.github/workflows/release.yml) — see the
+[Dockerfile](https://github.com/mevijays/goca/blob/main/Dockerfile) for what's in it (a single static ~28 MB binary on
 `distroless/static`, running as a non-root user). Build it yourself with
 `docker build -t goca .`.
 
-Or with [docker-compose.yaml](docker-compose.yaml), which wires up the same
+Or with [docker-compose.yaml](https://github.com/mevijays/goca/blob/main/docker-compose.yaml), which wires up the same
 image plus an optional PostgreSQL service:
 
 ```bash
@@ -103,7 +103,7 @@ See the comments at the top of that file for the PostgreSQL variant
 ## A tour of what it does
 
 Full flag-by-flag reference for every command below lives in
-**[USAGE.md](docs/usage.md)**. This section is a guided overview.
+**[USAGE.md](usage.md)**. This section is a guided overview.
 
 ### Certificate authorities
 
@@ -132,7 +132,7 @@ http://your-server:8080/public/crl/acme-issuing-ca.crl
 ```
 
 Point `--crl-url` at that second URL when creating a CA and every certificate it
-issues will carry it. See **[USAGE.md — goca ca](docs/usage.md#goca-ca)** for every
+issues will carry it. See **[USAGE.md — goca ca](usage.md#goca-ca)** for every
 flag.
 
 ### Running under a CA you already have
@@ -200,7 +200,7 @@ openssl verify -CAfile pfsense-root.crt -untrusted app-chain.pem app.crt
 
 A trust anchor has no key, so goca refuses to issue or sign a CRL from it and
 says why. Same for an authority still waiting on its signature. Full reference:
-**[USAGE.md — goca ca](docs/usage.md#goca-ca)**.
+**[USAGE.md — goca ca](usage.md#goca-ca)**.
 
 ### Requesting certificates
 
@@ -240,8 +240,8 @@ goca csr new --common-name app.internal.lan --san app.internal.lan --out ./req
 
 The web portal has the same three flows: a request form with a
 generate-or-paste-CSR toggle, and a standalone CSR generator under **CSR tool**.
-Full flags: **[USAGE.md — goca cert](docs/usage.md#goca-cert)**,
-**[goca csr](docs/usage.md#goca-csr)**.
+Full flags: **[USAGE.md — goca cert](usage.md#goca-cert)**,
+**[goca csr](usage.md#goca-csr)**.
 
 Just need to decode a certificate, private key or CSR someone handed you - the
 `openssl x509/req/pkey -text -noout` you'd otherwise reach for a terminal for?
@@ -265,7 +265,7 @@ back either - only its type and a fingerprint of its public half, which is
 what the match check compares.
 
 There's a CLI equivalent for certificates and CSRs too:
-**[goca inspect](docs/usage.md#goca-inspect-file-)**.
+**[goca inspect](usage.md#goca-inspect-file-)**.
 
 ### Finding and re-downloading, later
 
@@ -354,8 +354,8 @@ too, along with any subordinate authorities beneath it. When goca holds the
 issuer, the retired CA's own certificate goes onto that issuer's CRL — the part
 relying parties can actually observe. When it doesn't (a root, or an external
 issuer), goca says so and tells you to revoke it on the other side as well.
-Full reference: **[USAGE.md — goca cert](docs/usage.md#goca-cert)**,
-**[revocation reasons](docs/usage.md#revocation-reasons)**.
+Full reference: **[USAGE.md — goca cert](usage.md#goca-cert)**,
+**[revocation reasons](usage.md#revocation-reasons)**.
 
 ### Profiles
 
@@ -387,7 +387,7 @@ or a bearer token.
 **Interactive reference:** sign in as an admin and open **API** in the top
 navigation (`/settings/api-docs`) for a full Swagger UI browser over every
 endpoint below, generated from an embedded OpenAPI 3.0 spec
-([internal/web/openapi.yaml](internal/web/openapi.yaml)) — including a
+([internal/web/openapi.yaml](https://github.com/mevijays/goca/blob/main/internal/web/openapi.yaml)) — including a
 "Try it out" console once you paste a bearer token into its Authorize dialog.
 Everything is vendored (no CDN calls), matching the portal's own strict CSP.
 The raw spec is also downloadable from that page, or directly at
@@ -442,15 +442,15 @@ curl -H "Authorization: Bearer $TOK" \
 | `GET` `POST` `DELETE` | `/api/v1/tokens` | |
 | `GET` `POST` `PATCH` `DELETE` | `/api/v1/users` | admin |
 | `GET` | `/api/v1/audit` | admin |
-| `GET` `POST` | `/api/v1/acme/eab` | manage EAB credentials (admin) — see [ACME-EAB.md](docs/acme-eab.md) |
+| `GET` `POST` | `/api/v1/acme/eab` | manage EAB credentials (admin) — see [ACME-EAB.md](acme-eab.md) |
 | `GET` | `/api/v1/acme/accounts` | registered ACME accounts (admin) |
 
 Public, unauthenticated: `/public/ca/{slug}.crt` (also `.pem`, `.der`) and
 `/public/crl/{slug}.crl` (also `.pem`). Also unauthenticated at this layer,
 with its own JWS-based protocol authentication instead: `/acme/*` — the ACME
-server itself, see [ACME-EAB.md](docs/acme-eab.md).
+server itself, see [ACME-EAB.md](acme-eab.md).
 
-Every CLI command in [USAGE.md](docs/usage.md) has a REST equivalent in this table
+Every CLI command in [USAGE.md](usage.md) has a REST equivalent in this table
 and vice versa — pick whichever fits the automation you're writing.
 
 ---
@@ -462,8 +462,8 @@ goca supports local password accounts, LDAP/Active Directory, and OIDC/SSO
 local break-glass admin that always works even when the directory or SSO
 provider is down. Both map directory/provider groups onto goca's admin/user
 roles the same way. Full setup, including every flag:
-**[SETUP.md — LDAP setup](docs/setup.md#ldap-setup)**,
-**[SETUP.md — Single sign-on (OIDC) setup](docs/setup.md#single-sign-on-oidc-setup)**.
+**[SETUP.md — LDAP setup](setup.md#ldap-setup)**,
+**[SETUP.md — Single sign-on (OIDC) setup](setup.md#single-sign-on-oidc-setup)**.
 
 ```bash
 goca ldap test
@@ -491,11 +491,11 @@ The portal refuses to remove or demote the last enabled admin.
 `goca setup` writes `config.yaml`, and every runtime setting — server address,
 auth mode, certificate defaults, LDAP, OIDC — lives there. Full schema,
 discovery order, and the master-key backup story:
-**[SETUP.md — the config file](docs/setup.md#the-config-file)**.
+**[SETUP.md — the config file](setup.md#the-config-file)**.
 
 ## Trusting the CA on clients
 
-**[SETUP.md — trusting the CA on clients](docs/setup.md#trusting-the-ca-on-clients)**
+**[SETUP.md — trusting the CA on clients](setup.md#trusting-the-ca-on-clients)**
 covers Linux, macOS and Windows. Quick reference:
 
 ```bash
@@ -541,7 +541,7 @@ The database migrates itself on open: missing columns and tables are added in
 place, and existing data is left alone. Back up `goca.db` and `config.yaml`
 together before upgrading, as always — the master key in the config is what
 decrypts the keys in the database. Full procedure:
-**[SETUP.md — upgrading](docs/setup.md#upgrading)**.
+**[SETUP.md — upgrading](setup.md#upgrading)**.
 
 ## Development
 
@@ -562,8 +562,8 @@ GOOS=linux GOARCH=amd64 go build -o goca-linux-amd64 .
 | `internal/web` | portal handlers, REST API, embedded templates and assets |
 | `internal/cli` | cobra commands |
 | `internal/service` | systemd and launchd unit generation |
-| `internal/acme` | RFC 8555 ACME server (EAB-only) — see [ACME-EAB.md](docs/acme-eab.md) |
-| `internal/pqcrypt` | hybrid ML-KEM-768 + X25519 envelope encryption — see [SECRETS.md](docs/secrets.md) |
+| `internal/acme` | RFC 8555 ACME server (EAB-only) — see [ACME-EAB.md](acme-eab.md) |
+| `internal/pqcrypt` | hybrid ML-KEM-768 + X25519 envelope encryption — see [SECRETS.md](secrets.md) |
 | `internal/vault` | secret manager service layer (versioning, bindings, cert materialization) |
 | `internal/k8sauth` | verifies Kubernetes ServiceAccount tokens (OIDC/JWKS + TokenReview) |
 | `internal/csi` | Secrets Store CSI Driver provider — `goca run csi-provider` |

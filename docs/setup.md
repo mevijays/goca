@@ -4,7 +4,7 @@ This covers everything from a fresh binary to a running portal: building,
 `goca setup` (interactive and unattended), the config file it produces,
 running the web portal, installing it as a service, TLS, LDAP, and upgrading
 an existing install. For day-to-day CLI usage once you're running, see
-[USAGE.md](USAGE.md). For what goca does, see [README.md](README.md).
+[USAGE.md](usage.md). For what goca does, see [README.md](index.md).
 
 ## Contents
 
@@ -373,7 +373,7 @@ Key points:
   an existing SQLite install to PostgreSQL means re-issuing/re-importing into
   a freshly set-up PostgreSQL-backed instance; there is no `goca` command that
   copies data between the two today.
-- [docker-compose.yaml](docker-compose.yaml) ships an optional PostgreSQL
+- [docker-compose.yaml](https://github.com/mevijays/goca/blob/main/docker-compose.yaml) ships an optional PostgreSQL
   service behind the `postgres` profile — see the comments at the top of that
   file.
 
@@ -585,16 +585,16 @@ goca ca create --name "Acme Root CA" --common-name "Acme Root CA" \
     --organization Acme --country IN --key-type rsa-4096 --days 3650
 ```
 
-See [USAGE.md](USAGE.md#goca-ca) for the full `goca ca create` reference,
+See [USAGE.md](usage.md#goca-ca) for the full `goca ca create` reference,
 including creating intermediates under a root.
 
 ## Running underneath an existing CA
 
 If you already operate a CA — pfSense, a corporate root, an offline root —
 goca can run as an intermediate beneath it instead of as its own root. This
-is covered in full in [README.md](README.md#running-under-a-ca-you-already-have)
+is covered in full in [README.md](index.md#running-under-a-ca-you-already-have)
 and the [`goca ca request` / `goca ca import` / `goca ca import-signed`
-reference](USAGE.md#goca-ca) in USAGE.md. Short version:
+reference](usage.md#goca-ca) in USAGE.md. Short version:
 
 ```bash
 # goca generates the key and a CSR; the key never leaves this server

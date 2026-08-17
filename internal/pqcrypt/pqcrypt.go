@@ -8,7 +8,7 @@
 // flaw in ML-KEM cannot by itself expose sealed secrets; pure ML-KEM would
 // be a regression against that.
 //
-// Read SECRETS.md before assuming "post-quantum" means "replaces AES-256":
+// Read docs/secrets.md before assuming "post-quantum" means "replaces AES-256":
 // AES-256-GCM is itself already considered post-quantum secure (Grover's
 // algorithm only halves its effective key strength), so what ML-KEM adds
 // here is specifically public-key envelope encryption - harvest-now,
@@ -80,7 +80,7 @@ type Vault struct {
 // DeriveVault deterministically derives the vault keypair from a 32-byte
 // master key via HKDF-SHA256. The same master key always yields the same
 // vault keypair, so a restart needs no separate unseal step and no new key
-// material to back up beyond what SETUP.md already documents: config.yaml
+// material to back up beyond what docs/setup.md already documents: config.yaml
 // and the database, together. The trade-off is the same one that already
 // applies to CA private keys - anyone holding the master key can decrypt
 // everything sealed with it.

@@ -16,15 +16,15 @@ domain reachability enters into it.
 
 If you need real challenge-based validation (a public-facing CA, or you want
 per-order proof of control regardless of the pre-shared secret), goca isn't
-the tool for that — see [README.md](README.md) for what it's built for
+the tool for that — see [README.md](index.md) for what it's built for
 instead. For everything internal, EAB-only is simpler to operate and exactly
 matches how you already trust the cluster: it's on your network, and it holds
 a secret you gave it.
 
-Setup and CLI basics live in [SETUP.md](SETUP.md) and [USAGE.md](USAGE.md).
+Setup and CLI basics live in [SETUP.md](setup.md) and [USAGE.md](usage.md).
 This document is the complete story for the ACME side. Want a runnable
 copy-paste version instead of reading first? See
-**[k8s-demo/](k8s-demo/README.md)** — cert-manager install, the exact
+**[kubernetes/cert-manager.md](kubernetes/cert-manager.md)** — cert-manager install, the exact
 `ClusterIssuer`/`Certificate` YAML, applied in order.
 
 ## Contents
@@ -167,7 +167,7 @@ goca acme accounts show 1             # one account's orders
 goca acme status                      # directory URL + a quick summary
 ```
 
-Full flag reference: [USAGE.md](USAGE.md) covers every other command; the
+Full flag reference: [USAGE.md](usage.md) covers every other command; the
 `acme` subtree isn't duplicated there in as much depth as here since this file
 is the canonical reference for it.
 
@@ -407,7 +407,7 @@ ID  COMMON NAME                 AUTHORITY        PROFILE  STATUS  EXPIRES     RE
 1   app.svc.cluster-a.internal  ACME Issuing CA  server   active  2027-09-16  acme:cluster-a
 ```
 
-Everything else works exactly as documented in [USAGE.md](USAGE.md#goca-cert):
+Everything else works exactly as documented in [USAGE.md](usage.md#goca-cert):
 `goca cert show`, `export`, `renew`, `revoke`, `hold`. The private key is
 **never** stored — cert-manager (like any well-behaved ACME client) generates
 its own key and only ever sends goca a CSR, so there is nothing for goca to

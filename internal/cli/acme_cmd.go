@@ -27,7 +27,7 @@ entire trust decision - it binds accounts bootstrapped with it to one CA, one
 certificate profile, an optional set of allowed domains, and an optional
 account limit.
 
-See ACME-EAB.md for the full walkthrough, including a cert-manager
+See docs/acme-eab.md for the full walkthrough, including a cert-manager
 ClusterIssuer example.`),
 	}
 	cmd.AddCommand(newACMEEABCmd(), newACMEAccountsCmd(), newACMEStatusCmd())
@@ -118,7 +118,7 @@ how many accounts may ever be created with it.`),
 			fmt.Printf("  \033[1mHMAC key: %s\033[0m\n", res.HMACKeyB64)
 			fmt.Println()
 			warn("this key is shown once; store it in your cert-manager Secret now")
-			info("see: goca acme eab show %s   (or ACME-EAB.md for the ClusterIssuer YAML)", res.Cred.KeyID)
+			info("see: goca acme eab show %s   (or docs/acme-eab.md for the ClusterIssuer YAML)", res.Cred.KeyID)
 			return nil
 		},
 	}

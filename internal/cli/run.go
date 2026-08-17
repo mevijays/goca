@@ -114,7 +114,7 @@ bindings, and decrypts anything - the same trust boundary that already
 guards CA private keys and every other secret in goca.
 
 See k8s-demo/csi for a working DaemonSet, CSIDriver, RBAC and
-SecretProviderClass example, and SECRETS.md for the full walkthrough.`),
+SecretProviderClass example, and docs/secrets.md for the full walkthrough.`),
 		Example: strings.TrimSpace(`
   goca run csi-provider --goca-address https://goca.mylab.lan --audience goca-csi
   goca run csi-provider --audience goca-csi --ca-cert /var/run/secrets/goca-ca/ca.crt`),

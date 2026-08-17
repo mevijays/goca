@@ -8,7 +8,7 @@ provider with no Kubernetes `Secret` object ever holding the plaintext.
 This document covers the design, the honest story on what "post-quantum" actually
 buys here, day-to-day usage across the CLI/web/API, key custody and rotation, and
 the Kubernetes walkthrough. For the CSI provider specifically, see
-[k8s-demo/csi/README.md](k8s-demo/csi/README.md) for copy-pasteable manifests.
+[kubernetes/csi.md](kubernetes/csi.md) for copy-pasteable manifests.
 
 ## Contents
 
@@ -222,7 +222,7 @@ patterns are supported (`web-*`, `*`), matched with `path.Match` syntax.
 Both can be configured together; the OIDC path is tried first and falls back to
 TokenReview whenever it's unreachable. See `CSIConfig` in
 `internal/config/config.go` for every field, and
-**[k8s-demo/csi/README.md](k8s-demo/csi/README.md)** for the full walkthrough —
+**[kubernetes/csi.md](kubernetes/csi.md)** for the full walkthrough —
 installing the upstream driver, the provider DaemonSet, RBAC, example
 `SecretProviderClass`es for both a `kv` and a `certificate` secret, and a live
 cross-namespace denial + rotation demonstration.
@@ -249,7 +249,7 @@ This is the same key that already protects every CA private key, the LDAP bind
 password, and the OIDC client secret — deliberately, not as an oversight. It means:
 
 - **No new key material to escrow.** The "back up `config.yaml` and the database
-  together" story in [SETUP.md](SETUP.md) already covers the secret manager; there
+  together" story in [SETUP.md](setup.md) already covers the secret manager; there
   is nothing additional to protect or lose.
 - **Restarts stay unattended.** Nothing needs to be re-entered or unsealed on
   `goca run web` startup — the vault keypair is re-derived from the same config
@@ -349,7 +349,7 @@ none are implemented):
   silently overwriting the other or persisting a ciphertext whose AAD doesn't match
   its actual stored version.
 - CSI-specific issues (driver installation, `CSIDriver` registration, RBAC): see
-  [k8s-demo/csi/README.md#troubleshooting](k8s-demo/csi/README.md#troubleshooting).
+  [kubernetes/csi.md#troubleshooting](kubernetes/csi.md#troubleshooting).
 
 ## Reference: envelope format and schema
 

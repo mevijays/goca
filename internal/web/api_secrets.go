@@ -14,7 +14,7 @@ import (
 // Admin-only in this phase, mirroring the ACME EAB administration surface in
 // acme_admin.go. A scoped, workload-facing fetch endpoint - authenticated by
 // a Kubernetes ServiceAccount token rather than a session or API token -
-// arrives with the CSI provider in a later phase; see SECRETS.md.
+// arrives with the CSI provider in a later phase; see docs/secrets.md.
 //
 // Secrets are addressed by numeric id here, the same way CAs and
 // certificates are, even though every other interface (the CLI, Bind's glob

@@ -1,7 +1,7 @@
 // Package vault is goca's secret manager: named, versioned secrets sealed
 // with internal/pqcrypt's hybrid ML-KEM-768 + X25519 envelope, exposed to
 // the CLI, the REST API and (in a later phase) a Kubernetes Secrets Store
-// CSI Driver provider. See SECRETS.md for the design and threat model.
+// CSI Driver provider. See docs/secrets.md for the design and threat model.
 package vault
 
 import (
@@ -37,7 +37,7 @@ type Service struct {
 // New derives the vault keypair from the config's master key - the same key
 // that already protects CA private keys and LDAP/OIDC secrets, so restarts
 // stay unattended and "back up config.yaml with the database" keeps being
-// the whole story (see SECRETS.md for the key-custody trade-off this makes).
+// the whole story (see docs/secrets.md for the key-custody trade-off this makes).
 // caSvc may be nil in a context that never touches certificate-type secrets;
 // every certificate-type operation reports a clear error in that case
 // instead of a nil-pointer panic.

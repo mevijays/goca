@@ -119,7 +119,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- ACME (RFC 8555, EAB-only) ----
 	// Unauthenticated at the routing level: every endpoint here authenticates
 	// itself via the JWS the ACME protocol carries, not a portal session or
-	// bearer token. See internal/acme and ACME-EAB.md.
+	// bearer token. See internal/acme and docs/acme-eab.md.
 	mux.HandleFunc("GET /acme/directory", s.handleACMEDirectory)
 	mux.HandleFunc("GET /acme/new-nonce", s.handleACMENewNonce)
 	mux.HandleFunc("HEAD /acme/new-nonce", s.handleACMENewNonce)
@@ -283,7 +283,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Secret manager. Admin-only in this phase; a scoped, workload-facing
 	// fetch endpoint arrives with the Kubernetes CSI provider in a later
-	// phase. See internal/vault and SECRETS.md.
+	// phase. See internal/vault and docs/secrets.md.
 	apiAdmin("GET /api/v1/secrets", s.apiSecretList)
 	apiAdmin("POST /api/v1/secrets", s.apiSecretCreate)
 	apiAdmin("GET /api/v1/secrets/{id}", s.apiSecretGet)

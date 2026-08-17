@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS acme_challenges (
 CREATE INDEX IF NOT EXISTS idx_acme_challenges_authz ON acme_challenges(authorization_id);
 
 -- Secret manager: named, versioned secrets sealed with the hybrid ML-KEM-768
--- + X25519 envelope in internal/pqcrypt. See SECRETS.md for the design.
+-- + X25519 envelope in internal/pqcrypt. See docs/secrets.md for the design.
 CREATE TABLE IF NOT EXISTS secrets (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   name            TEXT NOT NULL UNIQUE,       -- path-like, e.g. "team-a/db/password"

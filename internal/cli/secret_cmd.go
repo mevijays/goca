@@ -17,7 +17,7 @@ import (
 
 // newSecretCmd groups goca's secret manager: named, versioned secrets sealed
 // with a hybrid ML-KEM-768 + X25519 envelope (see internal/pqcrypt and
-// SECRETS.md), stored alongside CAs and certificates, and - in a later
+// docs/secrets.md), stored alongside CAs and certificates, and - in a later
 // phase - readable by Kubernetes workloads through the Secrets Store CSI
 // Driver via the bindings managed here.
 func newSecretCmd() *cobra.Command {
@@ -35,7 +35,7 @@ goca's secret manager stores three kinds of secret:
 
 Every kv/file write creates a new, immutable version; nothing is overwritten.
 Payloads are sealed at rest with a hybrid ML-KEM-768 + X25519 envelope - see
-SECRETS.md for what that buys over the AES-256-GCM goca already used.`),
+docs/secrets.md for what that buys over the AES-256-GCM goca already used.`),
 	}
 	cmd.AddCommand(
 		newSecretCreateCmd(),

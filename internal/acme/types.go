@@ -3,7 +3,7 @@
 // sole trust mechanism: there is no HTTP-01 or DNS-01 challenge validation.
 // An EAB credential *is* the authorization decision an operator makes -
 // everything else (which CA signs, which profile, which domains are in
-// scope) is configured on the credential once, up front. See ACME-EAB.md for
+// scope) is configured on the credential once, up front. See docs/acme-eab.md for
 // the full operator-facing story and why this fits a private, internal CA
 // better than public-style domain validation.
 package acme

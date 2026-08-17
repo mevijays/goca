@@ -22,6 +22,10 @@ config.yaml
 # Go
 /vendor/
 
+# docs (mkdocs) - built site and local venv, never committed
+/site/
+.docs-venv/
+
 # editors / OS cruft
 .DS_Store
 .idea/
