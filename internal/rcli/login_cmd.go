@@ -148,6 +148,24 @@ recorded in shell history. Type it at the prompt, or pipe it with
 				return fmt.Errorf("save %s: %w", cfg.Path(), err)
 			}
 
+			if flagJSON {
+				// The token is deliberately included: --json is the scripted
+				// path, and a CI job that cannot read the credential out of
+				// the response has to go rummaging in the config file instead.
+				// `goca token create --json` already prints a token the same
+				// way, and this only ever goes to the caller's own stdout.
+				return termio.PrintJSON(map[string]any{
+					"context":    name,
+					"server":     entry.Server,
+					"user":       entry.User,
+					"role":       entry.Role,
+					"token":      entry.Token,
+					"token_id":   entry.TokenID,
+					"expires_at": entry.ExpiresAt,
+					"config":     cfg.Path(),
+				})
+			}
+
 			termio.OK("signed in to %s as %s (%s)", entry.Server, entry.User, entry.Role)
 			termio.Info("context %q saved to %s", name, cfg.Path())
 			if entry.ExpiresAt != nil {

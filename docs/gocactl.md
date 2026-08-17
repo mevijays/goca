@@ -88,6 +88,14 @@ printf '%s' "$CA_PASSWORD" | gocactl login --server https://ca.example.com \
   --username ci-bot --password-stdin --days 30
 ```
 
+Add `--json` to get the token back on stdout instead of a summary, for a job
+that wants a short-lived credential rather than a long-lived stored secret:
+
+```bash
+TOKEN=$(printf '%s' "$CA_PASSWORD" | gocactl login --server https://ca.example.com \
+  --username ci-bot --password-stdin --days 1 --json | jq -r .token)
+```
+
 If your server is OIDC-only, there is no password to send — mint a token in
 the portal (**Settings → API tokens**) and save it directly:
 

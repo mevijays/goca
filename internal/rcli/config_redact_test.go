@@ -2,6 +2,10 @@ package rcli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,4 +97,56 @@ func runCommand(t *testing.T, configPath string, args ...string) string {
 		t.Fatalf("gocactl %s failed: %v (output: %s)", strings.Join(args, " "), runErr, buf.String())
 	}
 	return buf.String()
+}
+
+// Every gocactl command honours --json, and login has to as well: it is the
+// one command a CI job runs before it has a token, so if --json silently
+// prints the human summary instead there is no way to get the credential out
+// except by parsing the config file. It shipped that way once.
+func TestLoginHonoursJSON(t *testing.T) {
+	const token = "goca_ci123456_TOKENBODYFORTHETEST0000000000"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/login" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"token":%q,"token_id":42,"token_name":"ci","role":"admin",
+			"user":{"id":1,"username":"ci-bot","role":"admin","source":"local"}}`, token)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	stdin, err := os.CreateTemp(dir, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.WriteString("hunter2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	realStdin := os.Stdin
+	os.Stdin = stdin
+	defer func() { os.Stdin = realStdin }()
+
+	out := runCommand(t, cfgPath, "login", "--server", srv.URL,
+		"--username", "ci-bot", "--password-stdin", "--json")
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("`login --json` did not emit JSON (%v); a script cannot read the token out of:\n%s", err, out)
+	}
+	if got["token"] != token {
+		t.Errorf("login --json token = %v, want the token the server issued", got["token"])
+	}
+	for _, k := range []string{"server", "user", "role", "token_id", "context"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("login --json is missing %q; got keys %v", k, got)
+		}
+	}
 }
