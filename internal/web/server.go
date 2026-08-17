@@ -205,6 +205,19 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /settings/api-docs", s.handleAPIDocsPage)
 	admin("GET /settings/api-docs/openapi.yaml", s.handleOpenAPISpec)
 
+	// ---- secret manager (portal pages; REST API is under /api/v1/secrets*, below) ----
+	admin("GET /secrets", s.handleSecretsList)
+	admin("POST /secrets", s.handleSecretCreate)
+	admin("GET /secrets/{id}", s.handleSecretDetail)
+	admin("POST /secrets/{id}/meta", s.handleSecretUpdateMeta)
+	admin("POST /secrets/{id}/disable", s.handleSecretDisable)
+	admin("POST /secrets/{id}/delete", s.handleSecretDelete)
+	admin("POST /secrets/{id}/versions", s.handleSecretVersionPut)
+	admin("POST /secrets/{id}/versions/{version}/destroy", s.handleSecretVersionDestroy)
+	admin("POST /secrets/{id}/bindings", s.handleSecretBindingCreate)
+	admin("POST /secrets/{id}/bindings/{bindingID}/delete", s.handleSecretBindingDelete)
+	admin("GET /secrets/{id}/download/{file}", s.handleSecretDownload)
+
 	// ---- REST API ----
 	api := func(pattern string, h apiHandler) { mux.Handle(pattern, s.apiAuth(h, false)) }
 	apiAdmin := func(pattern string, h apiHandler) { mux.Handle(pattern, s.apiAuth(h, true)) }

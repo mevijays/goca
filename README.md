@@ -9,6 +9,8 @@ default, or PostgreSQL when you want a server-based database.
 service, TLS, LDAP, upgrading, backups ·
 [USAGE.md](USAGE.md) — the complete CLI reference, every command and flag ·
 [ACME-EAB.md](ACME-EAB.md) — ACME for cert-manager and other clients, EAB-only ·
+[SECRETS.md](SECRETS.md) — the secret manager: post-quantum envelope encryption,
+key custody, and mounting secrets into Kubernetes with the CSI provider ·
 this file — what goca is and does, the REST API, and how it's built.
 
 ---
@@ -47,6 +49,11 @@ this file — what goca is and does, the REST API, and how it's built.
   usable for internal zones cert-manager and friends could never prove
   ownership of publicly. See [ACME-EAB.md](ACME-EAB.md), or
   [k8s-demo/](k8s-demo/README.md) for a runnable cert-manager walkthrough.
+- **A secret manager, sealed with post-quantum envelope encryption.** Named,
+  versioned secrets — and certificates goca itself issued, materialized fresh on
+  every read — mountable straight into Kubernetes pods via a Secrets Store CSI
+  Driver provider, with no plaintext ever touching etcd. See [SECRETS.md](SECRETS.md),
+  or [k8s-demo/csi/](k8s-demo/csi/README.md) for a runnable walkthrough.
 
 ## Quick start
 
@@ -556,7 +563,14 @@ GOOS=linux GOARCH=amd64 go build -o goca-linux-amd64 .
 | `internal/cli` | cobra commands |
 | `internal/service` | systemd and launchd unit generation |
 | `internal/acme` | RFC 8555 ACME server (EAB-only) — see [ACME-EAB.md](ACME-EAB.md) |
+| `internal/pqcrypt` | hybrid ML-KEM-768 + X25519 envelope encryption — see [SECRETS.md](SECRETS.md) |
+| `internal/vault` | secret manager service layer (versioning, bindings, cert materialization) |
+| `internal/k8sauth` | verifies Kubernetes ServiceAccount tokens (OIDC/JWKS + TokenReview) |
+| `internal/csi` | Secrets Store CSI Driver provider — `goca run csi-provider` |
 
 Vendored, not written here: [Swagger UI](https://github.com/swagger-api/swagger-ui)
 (Apache 2.0, license kept alongside it at `internal/web/static/swagger/LICENSE`),
-serving the interactive API docs at `/settings/api-docs`.
+serving the interactive API docs at `/settings/api-docs`; the CSI provider's gRPC
+stubs in `internal/csi/v1alpha1`, generated from
+[kubernetes-sigs/secrets-store-csi-driver](https://github.com/kubernetes-sigs/secrets-store-csi-driver)'s
+own `.proto` (Apache 2.0, attribution kept in each generated file).

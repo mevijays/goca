@@ -32,6 +32,7 @@
     {{end}}
     <a href="/tools/ssl" class="{{if eq .Nav "ssl"}}active{{end}}">SSL utility</a>
     {{if .User}}
+    {{if .User.IsAdmin}}<a href="/secrets" class="{{if eq .Nav "secrets"}}active{{end}}">Secrets</a>{{end}}
     {{if .User.IsAdmin}}<a href="/settings/acme" class="{{if eq .Nav "acme"}}active{{end}}">ACME</a>{{end}}
     {{if .User.IsAdmin}}<a href="/audit" class="{{if eq .Nav "audit"}}active{{end}}">Audit</a>{{end}}
     {{if .User.IsAdmin}}<a href="/settings/api-docs" class="{{if eq .Nav "api-docs"}}active{{end}}">API</a>{{end}}

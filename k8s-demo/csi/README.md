@@ -10,9 +10,8 @@ mount a volume, the driver asks `goca run csi-provider` (one pod per node)
 over a Unix socket, and that provider forwards the *pod's own*
 ServiceAccount token to the central goca server, which is the only thing
 that ever authenticates the token, checks it against a secret's bindings,
-and decrypts anything - see `internal/csi`'s package doc comment for the
-full reasoning, and `internal/pqcrypt`'s for how a secret is sealed at rest
-in the first place.
+and decrypts anything. See **[../../SECRETS.md](../../SECRETS.md)** for the
+full design, threat model, and key custody story.
 
 ## Prerequisites
 
@@ -223,4 +222,5 @@ helm uninstall csi-secrets-store --namespace kube-system
 See [../README.md](../README.md) for the cert-manager/ACME demo this
 complements - that one gets a certificate into Kubernetes as a `Secret` via
 ACME; this one mounts any goca secret, including a certificate, as files
-without ever putting it in etcd.
+without ever putting it in etcd. See [../../SECRETS.md](../../SECRETS.md)
+for the full design.
