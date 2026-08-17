@@ -1163,3 +1163,46 @@ func (e *externalSigner) sign(t *testing.T, csrPEM string) string {
 	}
 	return string(pki.EncodeCertPEM(der))
 }
+
+// A scoped token caps what the holder may do, and /me has to describe both
+// halves of that: the account's own role and the role the credential grants.
+// Reporting only the capped role -- which is what the embedded user carries,
+// since UserFromAPIToken rewrites it -- makes an administrator holding a
+// user-scoped token indistinguishable from an ordinary user, so `gocactl
+// whoami` cannot tell its reader whether to blame the account or the token.
+func TestMeReportsAccountRoleAndTokenRoleSeparately(t *testing.T) {
+	h := newHarness(t)
+
+	for _, tc := range []struct {
+		name              string
+		tokenRole         string
+		wantEffectiveRole string
+	}{
+		{"admin token", store.RoleAdmin, store.RoleAdmin},
+		{"user-scoped token", store.RoleUser, store.RoleUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, body := h.apiJSON(http.MethodGet, "/api/v1/me", "", h.token(tc.tokenRole))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET /me returned %d", rec.Code)
+			}
+			auth, ok := body["auth"].(map[string]any)
+			if !ok {
+				t.Fatalf("no auth block in %v", body)
+			}
+			// Both tokens belong to the admin account throughout.
+			if got := auth["account_role"]; got != store.RoleAdmin {
+				t.Errorf("auth.account_role = %v, want %q -- the account is an administrator regardless of the token's scope",
+					got, store.RoleAdmin)
+			}
+			if got := auth["role"]; got != tc.wantEffectiveRole {
+				t.Errorf("auth.role = %v, want %q", got, tc.wantEffectiveRole)
+			}
+			// The embedded user keeps reporting the capped role, because that
+			// is the honest answer to "what may this request do".
+			if got := body["role"]; got != tc.wantEffectiveRole {
+				t.Errorf("top-level role = %v, want the capped %q", got, tc.wantEffectiveRole)
+			}
+		})
+	}
+}

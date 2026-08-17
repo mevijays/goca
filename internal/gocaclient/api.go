@@ -213,10 +213,10 @@ func (c *Client) RenewCert(ctx context.Context, certRef string, in RenewInput) (
 	return Result[*IssueResult]{Value: &out, Raw: raw}, err
 }
 
-func (c *Client) CertHistory(ctx context.Context, certRef string) (Result[map[string]any], error) {
-	out := map[string]any{}
-	raw, err := c.get(ctx, "/api/v1/certificates/"+ref(certRef)+"/history", &out)
-	return Result[map[string]any]{Value: out, Raw: raw}, err
+func (c *Client) CertHistory(ctx context.Context, certRef string) (Result[*CertHistoryResult], error) {
+	out := &CertHistoryResult{}
+	raw, err := c.get(ctx, "/api/v1/certificates/"+ref(certRef)+"/history", out)
+	return Result[*CertHistoryResult]{Value: out, Raw: raw}, err
 }
 
 func (c *Client) HoldCert(ctx context.Context, certRef string) error {

@@ -57,15 +57,25 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          OUT="goca"
-          [ "${GOOS}" = "windows" ] && OUT="goca.exe"
+          EXT=""
+          [ "${GOOS}" = "windows" ] && EXT=".exe"
 
           go build -trimpath \
             -ldflags "-s -w \
               -X github.com/mevijays/goca/internal/cli.Version=${VERSION} \
               -X github.com/mevijays/goca/internal/cli.Commit=${COMMIT} \
               -X github.com/mevijays/goca/internal/cli.Date=${DATE}" \
-            -o "build/${OUT}" .
+            -o "build/goca${EXT}" .
+
+          # gocactl, the remote client, ships in the same archive so that a
+          # download always pairs a client with the server it was built from.
+          # Its build stamp lives in internal/rcli, hence the second ldflag set.
+          go build -trimpath \
+            -ldflags "-s -w \
+              -X github.com/mevijays/goca/internal/rcli.Version=${VERSION} \
+              -X github.com/mevijays/goca/internal/rcli.Commit=${COMMIT} \
+              -X github.com/mevijays/goca/internal/rcli.Date=${DATE}" \
+            -o "build/gocactl${EXT}" ./cmd/gocactl
 
       - name: Package
         run: |
@@ -73,9 +83,9 @@ jobs:
           NAME="goca_${GITHUB_REF_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p "dist"
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            (cd build && zip -j "../dist/${NAME}.zip" goca.exe)
+            (cd build && zip -j "../dist/${NAME}.zip" goca.exe gocactl.exe)
           else
-            tar -C build -czf "dist/${NAME}.tar.gz" goca
+            tar -C build -czf "dist/${NAME}.tar.gz" goca gocactl
           fi
 
       - name: Upload artifact

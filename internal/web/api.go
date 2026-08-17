@@ -215,7 +215,7 @@ func (s *Server) pathUser(r *http.Request) (*store.User, error) {
 // admin acts as a user), and only the token carries an expiry.
 func (s *Server) apiMe(w http.ResponseWriter, r *http.Request) error {
 	u := currentUser(r)
-	authInfo := map[string]any{"method": "session", "role": u.Role}
+	authInfo := map[string]any{"method": "session", "role": u.Role, "account_role": u.Role}
 	if tok := currentToken(r); tok != nil {
 		authInfo = map[string]any{
 			"method":     "token",
@@ -223,6 +223,15 @@ func (s *Server) apiMe(w http.ResponseWriter, r *http.Request) error {
 			"token_name": tok.Name,
 			"role":       tok.Role,
 			"expires_at": tok.ExpiresAt,
+		}
+		// UserFromAPIToken caps the returned user's role at the token's role, so
+		// the embedded user reports "user" even for an administrator holding a
+		// scoped token. That is the right answer for "what may I do", but it
+		// leaves no way to tell a limited account from a limited credential --
+		// so report the stored role too, and let the caller say which is which.
+		authInfo["account_role"] = u.Role
+		if stored, err := s.svc.Store().GetUser(r.Context(), u.ID); err == nil && stored != nil {
+			authInfo["account_role"] = stored.Role
 		}
 	}
 	writeJSON(w, http.StatusOK, meResponse{User: u, Auth: authInfo})

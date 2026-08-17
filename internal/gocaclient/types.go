@@ -202,6 +202,13 @@ type CertFilter struct {
 	SortDesc    bool
 }
 
+// CertHistoryResult is GET /certificates/{id}/history: the rotation chain a
+// certificate belongs to, plus which entry is the one currently in force.
+type CertHistoryResult struct {
+	CurrentID int64         `json:"current_id"`
+	History   []Certificate `json:"history"`
+}
+
 // CertPage is one page of search results.
 type CertPage struct {
 	Certificates []Certificate `json:"certificates"`
@@ -279,11 +286,15 @@ type LoginResult struct {
 // to its owner. Role here is the *effective* role: an API token's own role
 // caps it, so an admin acting through a user-scoped token is a user.
 type AuthInfo struct {
-	Method    string     `json:"method"`
-	TokenID   int64      `json:"token_id,omitempty"`
-	TokenName string     `json:"token_name,omitempty"`
-	Role      string     `json:"role"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Method    string `json:"method"`
+	TokenID   int64  `json:"token_id,omitempty"`
+	TokenName string `json:"token_name,omitempty"`
+	Role      string `json:"role"`
+	// AccountRole is the role stored on the account itself. The embedded
+	// User's Role is capped to the token's role by the server, so this is the
+	// only way to tell a limited account from a limited credential.
+	AccountRole string     `json:"account_role,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
 // Me is GET /me: the user, plus the credential that identified them.

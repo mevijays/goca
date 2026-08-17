@@ -1,6 +1,8 @@
 # build output
 /goca
 /goca-*
+/gocactl
+/gocactl.exe
 /dist/
 *.exe
 *.exe~

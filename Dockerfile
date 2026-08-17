@@ -15,6 +15,11 @@
 #
 # Run (day to day - GOCA_CONFIG below is already set, so no --config needed):
 #   docker run -d --name goca -p 8080:8080 -v goca-data:/data ghcr.io/mevijays/goca:latest
+#
+# The image also carries gocactl, the remote client, so a workstation or a CI
+# job can administer a goca server without installing anything:
+#   docker run --rm -it --entrypoint gocactl ghcr.io/mevijays/goca:latest \
+#     --server https://ca.example.com --token "$GOCA_TOKEN" ca list
 
 ########## build ##########
 # --platform=$BUILDPLATFORM pins this stage to the host architecture even
@@ -50,6 +55,18 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -X github.com/mevijays/goca/internal/cli.Date=${DATE}" \
       -o /out/goca .
 
+# gocactl is built from the same tree and shipped alongside, so the client is
+# always the exact version of the server it came with. It has its own ldflag
+# path because internal/rcli carries its own build stamp.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+      -trimpath \
+      -ldflags "-s -w \
+        -X github.com/mevijays/goca/internal/rcli.Version=${VERSION} \
+        -X github.com/mevijays/goca/internal/rcli.Commit=${COMMIT} \
+        -X github.com/mevijays/goca/internal/rcli.Date=${DATE}" \
+      -o /out/gocactl ./cmd/gocactl
+
 # The data directory is created here (this stage has a shell) and copied into
 # the runtime stage with the correct ownership, since a Docker VOLUME
 # inherits whatever the image already has at that path - distroless has no
@@ -65,6 +82,7 @@ LABEL org.opencontainers.image.title="goca" \
       org.opencontainers.image.licenses="MIT"
 
 COPY --from=build /out/goca /usr/local/bin/goca
+COPY --from=build /out/gocactl /usr/local/bin/gocactl
 COPY --from=build --chown=65532:65532 /data /data
 
 # Config discovery finds this without any flag; `goca setup` still needs

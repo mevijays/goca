@@ -8,6 +8,8 @@ default, or PostgreSQL when you want a server-based database.
 [SETUP.md](docs/setup.md) — building, `goca setup`, running, installing as a
 service, TLS, LDAP, upgrading, backups ·
 [USAGE.md](docs/usage.md) — the complete CLI reference, every command and flag ·
+[GOCACTL.md](docs/gocactl.md) — `gocactl`, the remote client: managing a goca
+server over the API from anywhere ·
 [ACME-EAB.md](docs/acme-eab.md) — ACME for cert-manager and other clients, EAB-only ·
 [SECRETS.md](docs/secrets.md) — the secret manager: post-quantum envelope encryption,
 key custody, and mounting secrets into Kubernetes with the CSI provider ·
@@ -22,6 +24,11 @@ this file — what goca is and does, the REST API, and how it's built.
   driver, and the optional PostgreSQL backend is the pure-Go `jackc/pgx` driver, so
   there is no cgo, no libc pinning and no OpenSSL to install. `GOOS=linux go build`
   produces a file you can scp anywhere.
+- **Two binaries, one release.** `goca` is the server and its local CLI.
+  `gocactl` is a thin remote client (~7 MB, no database driver linked) that
+  administers a running goca over the REST API — you sign in with your own
+  account and can do whatever your role allows, from a laptop or a CI job. It
+  renders identical output to `goca`. See **[GOCACTL.md](docs/gocactl.md)**.
 - **SQLite or PostgreSQL.** `goca setup` defaults to a SQLite file, zero extra
   moving parts. Point it at PostgreSQL instead when you want a server-based
   database — see [SETUP.md](docs/setup.md#database).
@@ -81,9 +88,17 @@ docker run -d --name goca -p 8080:8080 -v goca-data:/data ghcr.io/mevijays/goca:
 
 The image is published from every tagged release by
 [`.github/workflows/release.yml`](.github/workflows/release.yml) — see the
-[Dockerfile](Dockerfile) for what's in it (a single static ~28 MB binary on
-`distroless/static`, running as a non-root user). Build it yourself with
-`docker build -t goca .`.
+[Dockerfile](Dockerfile) for what's in it (two static binaries —
+`goca` and `gocactl` — on `distroless/static`, running as a non-root user).
+Build it yourself with `docker build -t goca .`.
+
+The client is in the image too, so a workstation can drive a goca server with
+nothing installed:
+
+```bash
+docker run --rm -it --entrypoint gocactl ghcr.io/mevijays/goca:latest \
+    --server https://ca.example.com --token "$GOCA_TOKEN" ca list
+```
 
 Or with [docker-compose.yaml](docker-compose.yaml), which wires up the same
 image plus an optional PostgreSQL service:
@@ -485,6 +500,11 @@ actually signing in: open the portal and click **Sign in with SSO**.
 | Manage users and view the audit log | no | yes |
 
 The portal refuses to remove or demote the last enabled admin.
+
+The same roles govern [`gocactl`](docs/gocactl.md), since the server does the
+authorising. An API token additionally carries its own role, and the effective
+role is the lower of the two — so an admin can mint a deliberately weak token
+for automation with `goca token create ci-issuer --role user`.
 
 ## Configuration
 

@@ -23,6 +23,7 @@ an existing install. For day-to-day CLI usage once you're running, see
 - [First certificate authority](#first-certificate-authority)
 - [Running underneath an existing CA](#running-underneath-an-existing-ca)
 - [Trusting the CA on clients](#trusting-the-ca-on-clients)
+- [Giving a teammate remote access](#giving-a-teammate-remote-access)
 - [Upgrading](#upgrading)
 - [Backup and disaster recovery](#backup-and-disaster-recovery)
 - [Uninstalling](#uninstalling)
@@ -635,6 +636,54 @@ Windows (PowerShell, run as Administrator):
 Invoke-WebRequest -Uri "http://ca.example.com:8080/public/ca/acme-root-ca.crt" -OutFile "acme-root-ca.crt"
 Import-Certificate -FilePath "acme-root-ca.crt" -CertStoreLocation Cert:\LocalMachine\Root
 ```
+
+## Giving a teammate remote access
+
+Running `goca` requires a shell on the server and the master key, which is far
+more than most people need. The [`gocactl`](gocactl.md) client talks to the
+REST API instead, so a colleague can be given exactly the access their role
+allows and nothing more.
+
+Create them an account (or let them sign in with their existing LDAP or SSO
+identity — both work):
+
+```bash
+sudo goca user add alice --role user
+```
+
+They install `gocactl` — it is in the same release archive as `goca` — and
+sign in:
+
+```bash
+gocactl login --server https://ca.example.com --username alice
+```
+
+That stores an expiring API token in `~/.config/gocactl/config.yaml`, mode
+`0600`. From then on `gocactl ca list`, `gocactl cert issue` and the rest work
+from their machine, authorised by the server against their role.
+
+A few things worth knowing when you set this up:
+
+- **Give out `user`, not `admin`, unless they need to administer.** A `user`
+  may issue and manage their own certificates and read the authorities; an
+  `admin` can do everything, including reading secrets and exporting CA keys.
+- **The CA's private keys never leave the server.** `ca export --with-key` is
+  refused for anyone who is not an administrator.
+- **If your portal uses a private certificate**, they need it to connect:
+  `gocactl login --ca-cert internal-root.crt …`. It is remembered afterwards.
+- **Tokens are visible and revocable.** `goca token list` on the server shows
+  every token, who owns it and when it expires; `goca token revoke <id>` ends
+  one immediately. Cap their lifetime with `security.api_login_token_max_days`
+  (default 90) in [the config file](#the-config-file).
+- **For automation, mint a scoped token rather than sharing a login.** An
+  administrator can create a token that is weaker than their own account:
+
+  ```bash
+  goca token create ci-issuer --role user --days 90
+  ```
+
+  Hand that to CI as `GOCACTL_TOKEN`; it can issue certificates and nothing
+  else, and revoking it does not disturb anyone's account.
 
 ## Upgrading
 

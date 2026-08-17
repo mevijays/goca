@@ -10,6 +10,14 @@ portal — they call the same service layer, so nothing here is CLI-only
 capability. The `README.md` [API table](index.md#the-rest-api) maps CLI
 commands to their `/api/v1` equivalents.
 
+!!! tip "Administering goca from another machine"
+    `goca` talks to the database directly, so it has to run **on the server
+    host** and needs the master key. To manage a goca server over the network
+    — from a laptop, a CI job or a container — use
+    [`gocactl`](gocactl.md), the remote client. It signs in with your own
+    account, is limited to what your role allows, and renders the same output
+    as the commands below.
+
 ## Contents
 
 - [Global flags and conventions](#global-flags-and-conventions)

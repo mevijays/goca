@@ -45,7 +45,18 @@ jobs:
           set -euo pipefail
           for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             GOOS="${pair%/*}" GOARCH="${pair#*/}" CGO_ENABLED=0 go build -o /dev/null .
+            GOOS="${pair%/*}" GOARCH="${pair#*/}" CGO_ENABLED=0 go build -o /dev/null ./cmd/gocactl
           done
+
+      # gocactl is a network client: it has no business opening a database, and
+      # linking a SQL driver would triple its size and its dependency surface
+      # for code it can never reach. Enforced here rather than by convention.
+      - name: gocactl links no database driver
+        run: |
+          if go list -deps ./cmd/gocactl | grep -E 'modernc.org/sqlite|jackc/pgx'; then
+            echo "a SQL driver is reachable from ./cmd/gocactl -- it must talk to the REST API only"
+            exit 1
+          fi
 
   docker:
     name: Docker build smoke test
