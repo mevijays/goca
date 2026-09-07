@@ -1347,6 +1347,229 @@ paths:
                 properties:
                   disabled: { type: boolean }
 
+  /csi-auth-methods:
+    get:
+      tags: [CSI trust domains]
+      summary: List CSI trust domains
+      description: Named Kubernetes clusters whose ServiceAccount tokens goca verifies for the CSI provider.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  methods:
+                    type: array
+                    items: { $ref: "#/components/schemas/CsiAuthMethod" }
+    post:
+      tags: [CSI trust domains]
+      summary: Create a CSI trust domain
+      description: The reviewer token is encrypted at rest and never returned again.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CreateCsiAuthMethodInput" } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  method: { $ref: "#/components/schemas/CsiAuthMethod" }
+
+  /csi-auth-methods/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [CSI trust domains]
+      summary: Get one CSI trust domain
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  method: { $ref: "#/components/schemas/CsiAuthMethod" }
+    patch:
+      tags: [CSI trust domains]
+      summary: Update a CSI trust domain
+      description: The name is immutable. An empty reviewer_token preserves the existing one.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CreateCsiAuthMethodInput" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  method: { $ref: "#/components/schemas/CsiAuthMethod" }
+    delete:
+      tags: [CSI trust domains]
+      summary: Delete a CSI trust domain
+      description: Refused while any secret binding still references it — rebind those to another domain (or "*") first.
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /csi-auth-methods/{id}/disable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [CSI trust domains]
+      summary: Disable or re-enable a CSI trust domain
+      description: Disabling rejects every token verified under this domain immediately.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disabled: { type: boolean, default: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: { type: boolean }
+
+  /webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhooks
+      description: Named HTTP endpoints that receive signed event notifications for audit actions. The signing key is never returned.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Webhook" }
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook
+      description: The secret signing key is encrypted at rest and never returned again. Omit it for unsigned deliveries.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CreateWebhookInput" } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+
+  /webhooks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Webhooks]
+      summary: Get one webhook
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook
+      description: The name is immutable. An empty secret preserves the existing one.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/CreateWebhookInput" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook
+      description: Also removes the webhook's delivery history.
+      responses:
+        "200": { description: Deleted, content: { application/json: { schema: { $ref: "#/components/schemas/StatusOK" } } } }
+
+  /webhooks/{id}/disable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Webhooks]
+      summary: Disable or re-enable a webhook
+      description: A disabled webhook is skipped by the dispatcher.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disabled: { type: boolean, default: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: { type: boolean }
+
+  /webhooks/{id}/deliveries:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, default: 50 }
+    get:
+      tags: [Webhooks]
+      summary: List recent delivery attempts for a webhook
+      description: Newest first. Status is pending, delivered, failed, or dead (retries exhausted).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items: { $ref: "#/components/schemas/WebhookDelivery" }
+
   /acme/accounts:
     get:
       tags: [ACME access]
@@ -1690,6 +1913,69 @@ components:
         allowed_domains: { type: array, items: { type: string } }
         max_accounts: { type: integer }
         expires_in_days: { type: integer, description: "auto-disable after N days; 0 = never" }
+
+    CsiAuthMethod:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, description: "trust domain name; the value a binding's k8s_auth_method matches against" }
+        audience: { type: string, description: "token audience to verify; default goca-csi" }
+        issuer_url: { type: string, description: "cluster ServiceAccount OIDC issuer URL" }
+        api_server_url: { type: string, description: "cluster API server URL (TokenReview path)" }
+        ca_cert: { type: string, description: "PEM CA to trust when calling the cluster API server" }
+        insecure_skip_verify: { type: boolean }
+        disabled: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateCsiAuthMethodInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: "trust domain name (immutable after creation)" }
+        audience: { type: string, default: goca-csi }
+        issuer_url: { type: string }
+        api_server_url: { type: string }
+        ca_cert: { type: string }
+        reviewer_token: { type: string, description: "ServiceAccount token for the TokenReview API; encrypted at rest, never returned" }
+        insecure_skip_verify: { type: boolean }
+
+    Webhook:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, description: "webhook name (immutable after creation)" }
+        url: { type: string, description: "endpoint to POST events to" }
+        events: { type: string, description: "comma-separated action prefixes to match; '*' = every event" }
+        disabled: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateWebhookInput:
+      type: object
+      required: [name, url]
+      properties:
+        name: { type: string, description: "webhook name (immutable after creation)" }
+        url: { type: string, description: "endpoint to POST events to" }
+        events: { type: string, default: "*", description: "comma-separated action prefixes to match; '*' = every event" }
+        secret: { type: string, description: "HMAC-SHA256 signing key; encrypted at rest, never returned. Omit for unsigned deliveries." }
+        disabled: { type: boolean }
+
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: integer }
+        webhook_id: { type: integer }
+        event: { type: string, description: "the audit action that triggered this delivery" }
+        status: { type: string, enum: [pending, delivered, failed, dead] }
+        attempts: { type: integer }
+        last_status: { type: integer, description: "HTTP status of the last attempt (0 if the request never completed)" }
+        last_error: { type: string }
+        next_attempt: { type: string, format: date-time, nullable: true, description: "when a failed delivery will be retried; null once dead" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     AcmeAccount:
       type: object

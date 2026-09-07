@@ -285,27 +285,27 @@ func TestBindUnbindAndGlobMatching(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b, err := v.Bind(ctx, "team-a/tls", "team-a", "web-*", nil, "tester")
+	b, err := v.Bind(ctx, "team-a/tls", "team-a", "web-*", "*", nil, "tester")
 	if err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 
-	if !MatchesBinding(b, "team-a", "web-frontend") {
+	if !MatchesBinding(b, "team-a", "web-frontend", "cluster-a") {
 		t.Error("expected the glob web-* to match web-frontend")
 	}
-	if MatchesBinding(b, "team-a", "worker") {
+	if MatchesBinding(b, "team-a", "worker", "cluster-a") {
 		t.Error("expected the glob web-* NOT to match worker")
 	}
-	if MatchesBinding(b, "team-b", "web-frontend") {
+	if MatchesBinding(b, "team-b", "web-frontend", "cluster-a") {
 		t.Error("expected namespace team-a NOT to match team-b")
 	}
 
 	past := time.Now().Add(-time.Minute)
-	expired, err := v.Bind(ctx, "team-a/tls", "*", "*", &past, "tester")
+	expired, err := v.Bind(ctx, "team-a/tls", "*", "*", "*", &past, "tester")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if MatchesBinding(expired, "anything", "anything") {
+	if MatchesBinding(expired, "anything", "anything", "cluster-a") {
 		t.Error("an expired binding must not match")
 	}
 
@@ -319,6 +319,49 @@ func TestBindUnbindAndGlobMatching(t *testing.T) {
 	}
 	if bindings, err := v.Bindings(ctx, "team-a/tls"); err != nil || len(bindings) != 1 {
 		t.Errorf("Bindings after Unbind = %d, %v, want 1", len(bindings), err)
+	}
+}
+
+// TestBindingAuthMethodScoping is the core multi-cluster trust-domain
+// property: a binding scoped to one CSI trust domain must not authorize a
+// token from a different domain, even when namespace and ServiceAccount are
+// identical. This is what stops a pod in cluster B from reading a secret
+// bound only to cluster A.
+func TestBindingAuthMethodScoping(t *testing.T) {
+	ctx := context.Background()
+	v, _, _ := newTestService(t)
+	if _, err := v.Create(ctx, CreateInput{Name: "prod/db", Type: store.SecretTypeKV, Actor: "tester"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bound to cluster-a only.
+	clusterA, err := v.Bind(ctx, "prod/db", "team-a", "web-frontend", "cluster-a", nil, "tester")
+	if err != nil {
+		t.Fatalf("Bind cluster-a: %v", err)
+	}
+	// Bound to any trust domain.
+	anyMethod, err := v.Bind(ctx, "prod/db", "team-a", "web-frontend", "*", nil, "tester")
+	if err != nil {
+		t.Fatalf("Bind *: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		b      *store.SecretBinding
+		method string
+		wantOK bool
+	}{
+		{"scoped match", clusterA, "cluster-a", true},
+		{"scoped mismatch", clusterA, "cluster-b", false},
+		{"wildcard matches any", anyMethod, "cluster-a", true},
+		{"wildcard matches other", anyMethod, "cluster-b", true},
+		{"scoped mismatch even with same ns/sa", clusterA, "cluster-b", false},
+	}
+	for _, tc := range cases {
+		got := MatchesBinding(tc.b, "team-a", "web-frontend", tc.method)
+		if got != tc.wantOK {
+			t.Errorf("MatchesBinding(%s, method=%s) = %v, want %v", tc.name, tc.method, got, tc.wantOK)
+		}
 	}
 }
 

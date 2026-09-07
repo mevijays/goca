@@ -13,6 +13,10 @@ server over the API from anywhere ·
 [ACME-EAB.md](acme-eab.md) — ACME for cert-manager and other clients, EAB-only ·
 [SECRETS.md](secrets.md) — the secret manager: post-quantum envelope encryption,
 key custody, and mounting secrets into Kubernetes with the CSI provider ·
+[GITOPS.md](gitops.md) — GitOps for secrets: `gocactl apply`/`diff`, the
+manifest format, and the ArgoCD pattern ·
+[OBSERVABILITY.md](observability.md) — Prometheus metrics, signed webhooks,
+and audit-log export ·
 this file — what goca is and does, the REST API, and how it's built.
 
 ---

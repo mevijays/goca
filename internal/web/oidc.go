@@ -101,7 +101,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.log.Warn("oidc: callback exchange failed", "error", err)
 		}
-		s.svc.AuditWithIP(r.Context(), "", "auth.oidc_failed", "", err.Error(), clientIP(r))
+		s.svc.AuditWithIP(r.Context(), "", "auth.oidc_failed", "", err.Error(), s.clientIP(r))
 		s.renderLogin(w, r, msg, "")
 		return
 	}

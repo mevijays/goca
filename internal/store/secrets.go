@@ -302,13 +302,13 @@ func (s *Store) DestroySecretVersion(ctx context.Context, id int64) error {
 //
 
 const secretBindingCols = `b.id, b.secret_id, COALESCE(s.name,''), b.k8s_namespace,
- b.k8s_service_account, b.expires_at, b.created_by, b.created_at`
+ b.k8s_service_account, b.k8s_auth_method, b.expires_at, b.created_by, b.created_at`
 
 func scanSecretBinding(sc interface{ Scan(...any) error }) (*SecretBinding, error) {
 	var b SecretBinding
 	var expires sql.NullTime
 	err := sc.Scan(&b.ID, &b.SecretID, &b.SecretName, &b.K8sNamespace, &b.K8sServiceAccount,
-		&expires, &b.CreatedBy, &b.CreatedAt)
+		&b.K8sAuthMethod, &expires, &b.CreatedBy, &b.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -327,9 +327,9 @@ func (s *Store) CreateSecretBinding(ctx context.Context, b *SecretBinding) (*Sec
 	}
 	var id int64
 	err := s.db.QueryRowContext(ctx, `INSERT INTO secret_bindings
-	 (secret_id, k8s_namespace, k8s_service_account, expires_at, created_by, created_at)
-	 VALUES (?,?,?,?,?,?) RETURNING id`,
-		b.SecretID, nz(b.K8sNamespace, "*"), nz(b.K8sServiceAccount, "*"), b.ExpiresAt,
+	 (secret_id, k8s_namespace, k8s_service_account, k8s_auth_method, expires_at, created_by, created_at)
+	 VALUES (?,?,?,?,?,?,?) RETURNING id`,
+		b.SecretID, nz(b.K8sNamespace, "*"), nz(b.K8sServiceAccount, "*"), nz(b.K8sAuthMethod, "*"), b.ExpiresAt,
 		b.CreatedBy, b.CreatedAt.UTC()).Scan(&id)
 	if err != nil {
 		return nil, err

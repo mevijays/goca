@@ -95,6 +95,7 @@ func newRunCSIProviderCmd() *cobra.Command {
 		socketDir          string
 		providerName       string
 		audience           string
+		authMethod         string
 		gocaAddress        string
 		caCertFile         string
 		insecureSkipVerify bool
@@ -143,6 +144,7 @@ SecretProviderClass example, and docs/secrets.md for the full walkthrough.`),
 
 			provider := &csi.Provider{
 				Audience:           audience,
+				AuthMethod:         authMethod,
 				DefaultGocaAddress: gocaAddress,
 				HTTPClient:         httpClient,
 				RuntimeVersion:     Version,
@@ -178,7 +180,7 @@ SecretProviderClass example, and docs/secrets.md for the full walkthrough.`),
 				grpcServer.GracefulStop()
 			}()
 
-			log.Info("goca csi provider listening", "socket", sockPath, "audience", audience, "goca_address", gocaAddress)
+			log.Info("goca csi provider listening", "socket", sockPath, "audience", audience, "auth_method", authMethod, "goca_address", gocaAddress)
 			return grpcServer.Serve(lis)
 		},
 	}
@@ -188,6 +190,8 @@ SecretProviderClass example, and docs/secrets.md for the full walkthrough.`),
 	fl.StringVar(&providerName, "provider-name", "goca", "this provider's name (must match ^[a-zA-Z0-9_-]{0,30}$)")
 	fl.StringVar(&audience, "audience", "goca-csi",
 		"token audience to request from pods and forward to the goca server (must match the CSIDriver's tokenRequests audience and the server's csi.audience)")
+	fl.StringVar(&authMethod, "auth-method", "",
+		"CSI trust domain (k8s auth method) this provider runs in - typically the cluster's name; sent as X-Goca-Auth-Method so the server scopes secret bindings to it (empty = default)")
 	fl.StringVar(&gocaAddress, "goca-address", "",
 		"default goca server URL, used when a SecretProviderClass omits its own gocaAddress parameter")
 	fl.StringVar(&caCertFile, "ca-cert", "", "trust this CA when connecting to the goca server (PEM file)")

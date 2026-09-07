@@ -457,6 +457,7 @@ func newSecretBindAddCmd() *cobra.Command {
 	var (
 		namespace      string
 		serviceAccount string
+		authMethod     string
 		expiresInDays  int
 	)
 	cmd := &cobra.Command{
@@ -464,7 +465,8 @@ func newSecretBindAddCmd() *cobra.Command {
 		Short: "Add a binding",
 		Example: strings.TrimSpace(`
   goca secret bind add team-a/web-tls --namespace team-a --service-account web-*
-  goca secret bind add team-a/shared-key --namespace '*' --service-account ci-runner --expires-in-days 30`),
+  goca secret bind add team-a/shared-key --namespace '*' --service-account ci-runner --expires-in-days 30
+  goca secret bind add prod/db --namespace team-a --service-account web --auth-method cluster-a`),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := open()
@@ -477,20 +479,21 @@ func newSecretBindAddCmd() *cobra.Command {
 				t := time.Now().AddDate(0, 0, expiresInDays)
 				expiresAt = &t
 			}
-			b, err := a.vault.Bind(cmd.Context(), args[0], namespace, serviceAccount, expiresAt, a.actor())
+			b, err := a.vault.Bind(cmd.Context(), args[0], namespace, serviceAccount, authMethod, expiresAt, a.actor())
 			if err != nil {
 				return err
 			}
 			if flagJSON {
 				return printJSON(b)
 			}
-			ok("bound %s to namespace=%s service-account=%s", args[0], b.K8sNamespace, b.K8sServiceAccount)
+			ok("bound %s to namespace=%s service-account=%s auth-method=%s", args[0], b.K8sNamespace, b.K8sServiceAccount, b.K8sAuthMethod)
 			return nil
 		},
 	}
 	fl := cmd.Flags()
 	fl.StringVar(&namespace, "namespace", "*", "namespace glob pattern")
 	fl.StringVar(&serviceAccount, "service-account", "*", "ServiceAccount glob pattern")
+	fl.StringVar(&authMethod, "auth-method", "*", "CSI trust domain (k8s auth method) glob pattern; '*' matches any cluster")
 	fl.IntVar(&expiresInDays, "expires-in-days", 0, "revoke this binding automatically after N days (0 = never)")
 	return cmd
 }
@@ -518,7 +521,7 @@ func newSecretBindListCmd() *cobra.Command {
 				fmt.Println("No bindings yet.")
 				return nil
 			}
-			t := newTable("id", "namespace", "service account", "state", "expires")
+			t := newTable("id", "namespace", "service account", "auth method", "state", "expires")
 			for _, b := range bindings {
 				state := "active"
 				if !b.Usable() {
@@ -528,7 +531,7 @@ func newSecretBindListCmd() *cobra.Command {
 				if b.ExpiresAt != nil {
 					expires = b.ExpiresAt.Local().Format("2006-01-02")
 				}
-				t.row(b.ID, b.K8sNamespace, b.K8sServiceAccount, state, expires)
+				t.row(b.ID, b.K8sNamespace, b.K8sServiceAccount, b.K8sAuthMethod, state, expires)
 			}
 			t.flush()
 			return nil

@@ -18,6 +18,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 
 	"github.com/mevijays/goca/internal/ca"
+	"github.com/mevijays/goca/internal/metrics"
 	"github.com/mevijays/goca/internal/pki"
 	"github.com/mevijays/goca/internal/store"
 )
@@ -216,6 +217,7 @@ func (s *Service) NewAccount(ctx context.Context, body []byte) (*store.AcmeAccou
 	_ = s.st.TouchEABCredUse(ctx, cred.ID)
 	s.audit(ctx, "acme:"+cred.Name, "acme.account.create", fmt.Sprint(account.ID),
 		fmt.Sprintf("eab=%s contact=%v", cred.Name, req.Contact))
+	metrics.AccountTotal.WithLabelValues(account.Status).Inc()
 	return account, s.accountObject(account), true, nil
 }
 
@@ -404,6 +406,7 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 		}); err != nil {
 			return nil, nil, ServerInternal("%v", err)
 		}
+		metrics.ChallengeTotal.WithLabelValues(store.AcmeStatusValid).Inc()
 	}
 
 	obj, err := s.OrderObjectFor(ctx, order)
@@ -412,6 +415,7 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 	}
 	s.audit(ctx, fmt.Sprintf("acme:account:%d", ar.account.ID), "acme.order.create", fmt.Sprint(order.ID),
 		fmt.Sprintf("identifiers=%v eab=%s", req.Identifiers, cred.Name))
+	metrics.OrderTotal.WithLabelValues(order.Status).Inc()
 	return order, obj, nil
 }
 
@@ -553,6 +557,7 @@ func (s *Service) Finalize(ctx context.Context, orderID int64, body []byte) (*Or
 	}
 	s.audit(ctx, "acme:"+cred.Name, "acme.order.finalize", fmt.Sprint(order.ID),
 		fmt.Sprintf("serial=%s cn=%s", res.Certificate.SerialHex, res.Certificate.CommonName))
+	metrics.OrderTotal.WithLabelValues("finalized").Inc()
 
 	updated, err := s.st.GetAcmeOrder(ctx, order.ID)
 	if err != nil {

@@ -350,6 +350,7 @@ type SecretBinding struct {
 	SecretName        string     `json:"secret_name,omitempty"`
 	K8sNamespace      string     `json:"k8s_namespace"`
 	K8sServiceAccount string     `json:"k8s_service_account"`
+	K8sAuthMethod     string     `json:"k8s_auth_method"`
 	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
 	CreatedBy         string     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -360,10 +361,61 @@ func (b *SecretBinding) Usable() bool {
 	return b.ExpiresAt == nil || time.Now().Before(*b.ExpiresAt)
 }
 
+// CsiAuthMethod is a named CSI trust domain - a Kubernetes cluster (or group
+// of clusters sharing an issuer) whose ServiceAccount tokens goca verifies.
+// ReviewerToken is write-only: it is accepted on create/update (plaintext or
+// enc:) and never returned by the server.
+type CsiAuthMethod struct {
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	Audience           string `json:"audience"`
+	IssuerURL          string `json:"issuer_url"`
+	APIServerURL       string `json:"api_server_url"`
+	CACert             string `json:"ca_cert"`
+	ReviewerToken      string `json:"reviewer_token,omitempty"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
+	Disabled           bool   `json:"disabled"`
+	CreatedBy          string `json:"created_by"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
 // SecretFile is one materialized file. Data is already base64-decoded.
 type SecretFile struct {
 	Name string
 	Data []byte
+}
+
+// Webhook is a named HTTP endpoint that receives signed event notifications
+// when goca records an audit action. Events is a comma-separated list of
+// action prefixes ("cert.issue,secret.put"); "*" matches every event. Secret
+// is write-only: it is accepted on create/update (plaintext or enc:) and never
+// returned by the server.
+type Webhook struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Events    string `json:"events"`
+	Secret    string `json:"secret,omitempty"`
+	Disabled  bool   `json:"disabled"`
+	CreatedBy string `json:"created_by"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// WebhookDelivery records the outcome of delivering one event to one webhook.
+// Status is pending, delivered, failed, or dead (dead = retries exhausted).
+type WebhookDelivery struct {
+	ID          int64  `json:"id"`
+	WebhookID   int64  `json:"webhook_id"`
+	Event       string `json:"event"`
+	Status      string `json:"status"`
+	Attempts    int    `json:"attempts"`
+	LastStatus  int    `json:"last_status"`
+	LastError   string `json:"last_error"`
+	NextAttempt string `json:"next_attempt,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 //

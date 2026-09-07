@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mevijays/goca/internal/config"
+	"github.com/mevijays/goca/internal/metrics"
 	"github.com/mevijays/goca/internal/pki"
 	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
@@ -20,10 +21,21 @@ import (
 
 // Service coordinates the PKI engine, the database and secret handling.
 type Service struct {
-	cfg *config.Config
-	st  *store.Store
-	box *secret.Box
+	cfg  *config.Config
+	st   *store.Store
+	box  *secret.Box
+	sink EventSink
 }
+
+// EventSink is invoked (best-effort) after every audit record is written, so
+// an observer such as the webhook dispatcher can react to state-changing
+// actions. It must be fast and non-fatal: the web layer wires it to the
+// dispatcher, which only enqueues a durable delivery row.
+type EventSink func(ctx context.Context, actor, action, target, detail, ip string)
+
+// SetEventSink installs the observer invoked after each audit write. It is
+// safe to call once at startup; a nil sink disables eventing.
+func (s *Service) SetEventSink(sink EventSink) { s.sink = sink }
 
 // New builds a Service from a validated config and an open store.
 func New(cfg *config.Config, st *store.Store) (*Service, error) {
@@ -461,6 +473,8 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (*IssueResult, error
 		fmt.Sprintf("serial=%s ca=%s profile=%s days=%d mode=%s key_stored=%t",
 			saved.SerialHex, caRec.Name, profile, days, mode, keyEnc != ""))
 
+	metrics.CertIssuedTotal.WithLabelValues(caRec.Name, string(profile)).Inc()
+
 	chainPEM, _ := s.CAChainPEM(ctx, caRec)
 	out := &IssueResult{Certificate: saved, CSRPEM: csrPEM, ChainPEM: string(chainPEM)}
 	// Always hand the key back on the issuing response, even when it is not
@@ -541,7 +555,11 @@ func (s *Service) FindCertificate(ctx context.Context, ref string) (*store.Certi
 
 // Search runs a filtered certificate query.
 func (s *Service) Search(ctx context.Context, f store.CertFilter) ([]*store.Certificate, int, error) {
-	return s.st.SearchCertificates(ctx, f)
+	list, total, err := s.st.SearchCertificates(ctx, f)
+	if err == nil {
+		metrics.CertSearchTotal.WithLabelValues(f.Status).Inc()
+	}
+	return list, total, err
 }
 
 // CertKeyPEM returns the stored private key for a certificate, if retained.
@@ -615,6 +633,8 @@ func (s *Service) Revoke(ctx context.Context, id int64, reason int, actor string
 	}
 	s.audit(ctx, actor, "cert.revoke", c.CommonName,
 		fmt.Sprintf("serial=%s reason=%s", c.SerialHex, pki.ReasonName(reason)))
+
+	metrics.CertRevokedTotal.WithLabelValues(pki.ReasonName(reason)).Inc()
 	return nil
 }
 
@@ -694,16 +714,25 @@ func (s *Service) decryptKey(enc string) (crypto.PrivateKey, error) {
 }
 
 func (s *Service) audit(ctx context.Context, actor, action, target, detail string) {
-	if actor == "" {
-		actor = "system"
-	}
-	// Audit failures must never mask the operation that succeeded.
-	_ = s.st.Audit(ctx, actor, action, target, detail, "")
+	s.recordAudit(ctx, actor, action, target, detail, "")
 }
 
 // AuditWithIP records an action including the caller's address.
 func (s *Service) AuditWithIP(ctx context.Context, actor, action, target, detail, ip string) {
+	s.recordAudit(ctx, actor, action, target, detail, ip)
+}
+
+// recordAudit is the single funnel every audit write passes through. It
+// persists the row (best-effort, so a failure never masks the operation that
+// succeeded) and then notifies the event sink, if one is installed.
+func (s *Service) recordAudit(ctx context.Context, actor, action, target, detail, ip string) {
+	if actor == "" {
+		actor = "system"
+	}
 	_ = s.st.Audit(ctx, actor, action, target, detail, ip)
+	if s.sink != nil {
+		s.sink(ctx, actor, action, target, detail, ip)
+	}
 }
 
 var slugRE = regexp.MustCompile(`[^a-z0-9]+`)

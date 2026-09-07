@@ -53,7 +53,7 @@ func (s *Server) apiAuthLogin(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	username := strings.TrimSpace(in.Username)
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 
 	if username == "" || in.Password == "" {
 		return &apiError{Status: http.StatusBadRequest, Msg: "username and password are required"}

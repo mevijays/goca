@@ -1,7 +1,10 @@
 package rcli
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -377,6 +380,91 @@ func newAuditCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum entries")
+	cmd.AddCommand(newAuditExportCmd())
+	return cmd
+}
+
+// newAuditExportCmd streams the entire audit log (following cursor
+// pagination) to stdout or a file as JSON or CSV, for off-box analysis and
+// SIEM ingestion.
+func newAuditExportCmd() *cobra.Command {
+	var (
+		format string
+		out    string
+		page   int
+	)
+	cmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export the full audit log as JSON or CSV",
+		Long: "Export the entire audit log, following cursor pagination, to stdout or a file.\n" +
+			"Use --format json for a machine-readable array, or --format csv for a flat table.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx, cancel := cmdContext(cmd)
+			defer cancel()
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			if page <= 0 {
+				page = 500
+			}
+			var all []gocaclient.AuditEntry
+			cursor := ""
+			for {
+				res, err := c.ListAuditPage(ctx, cursor, page)
+				if err != nil {
+					return err
+				}
+				all = append(all, res.Value.Entries...)
+				if res.Value.NextCursor == "" {
+					break
+				}
+				cursor = res.Value.NextCursor
+			}
+
+			var w *os.File
+			if out != "" {
+				w, err = os.Create(out)
+				if err != nil {
+					return err
+				}
+				defer w.Close()
+			} else {
+				w = os.Stdout
+			}
+
+			switch format {
+			case "csv":
+				cw := csv.NewWriter(w)
+				if err := cw.Write([]string{"id", "ts", "actor", "action", "target", "detail", "ip"}); err != nil {
+					return err
+				}
+				for _, e := range all {
+					if err := cw.Write([]string{
+						strconv.FormatInt(e.ID, 10),
+						e.TS.UTC().Format("2006-01-02T15:04:05Z07:00"),
+						e.Actor, e.Action, e.Target, e.Detail, e.IP,
+					}); err != nil {
+						return err
+					}
+				}
+				cw.Flush()
+				return cw.Error()
+			case "json", "":
+				enc := json.NewEncoder(w)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(all); err != nil {
+					return err
+				}
+				return nil
+			default:
+				return fmt.Errorf("unknown format %q (want json or csv)", format)
+			}
+		},
+	}
+	cmd.Flags().StringVar(&format, "format", "json", "output format: json or csv")
+	cmd.Flags().StringVarP(&out, "output", "o", "", "write to this file instead of stdout")
+	cmd.Flags().IntVar(&page, "page-size", 500, "entries per page when paginating")
 	return cmd
 }
 

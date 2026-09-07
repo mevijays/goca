@@ -286,7 +286,7 @@ func (s *Server) handleSecretBindingCreate(w http.ResponseWriter, r *http.Reques
 		expiresAt = &t
 	}
 	_, err := s.vault.Bind(r.Context(), sec.Name,
-		r.FormValue("k8s_namespace"), r.FormValue("k8s_service_account"), expiresAt,
+		r.FormValue("k8s_namespace"), r.FormValue("k8s_service_account"), r.FormValue("k8s_auth_method"), expiresAt,
 		currentUser(r).Username)
 	if err != nil {
 		s.flash(w, r, "error", err.Error())
@@ -334,7 +334,7 @@ func (s *Server) handleSecretDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, f := range files {
 		if f.Name == file {
-			s.vault.AuditWithIP(r.Context(), currentUser(r).Username, "secret.download", sec.Name, "file="+file, clientIP(r))
+			s.vault.AuditWithIP(r.Context(), currentUser(r).Username, "secret.download", sec.Name, "file="+file, s.clientIP(r))
 			sendFile(w, downloadFileName(sec.Name, file), "application/octet-stream", f.Data)
 			return
 		}

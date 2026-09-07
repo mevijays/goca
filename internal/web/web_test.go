@@ -1219,7 +1219,7 @@ func TestEnablingCSIWithoutTokenVerificationExplainsWhichKeysToSet(t *testing.T)
 	cfg.CSI.Enabled = true
 	cfg.CSI.IssuerURL, cfg.CSI.APIServerURL = "", ""
 
-	_, err := buildK8sVerifier(h.svc)
+	_, err := legacyCSIVerifier(h.svc)
 	if err == nil {
 		t.Fatal("enabling CSI with no issuer and no API server started anyway; tokens could not be verified")
 	}
@@ -1234,7 +1234,7 @@ func TestEnablingCSIWithoutTokenVerificationExplainsWhichKeysToSet(t *testing.T)
 	// is missing rather than repeating the generic advice above.
 	cfg.CSI.APIServerURL = "https://10.0.0.1:6443"
 	cfg.CSI.ReviewerToken = ""
-	_, err = buildK8sVerifier(h.svc)
+	_, err = legacyCSIVerifier(h.svc)
 	if err == nil {
 		t.Fatal("api_server_url with no reviewer_token started anyway; TokenReview calls would fail at mount time")
 	}
@@ -1250,9 +1250,9 @@ func TestEnablingCSIWithoutTokenVerificationExplainsWhichKeysToSet(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg.CSI.IssuerURL, cfg.CSI.APIServerURL, cfg.CSI.ReviewerToken = tc.issuer, tc.apiServer, tc.token
-			v, err := buildK8sVerifier(h.svc)
+			v, err := legacyCSIVerifier(h.svc)
 			if err != nil {
-				t.Fatalf("buildK8sVerifier: %v", err)
+				t.Fatalf("legacyCSIVerifier: %v", err)
 			}
 			if v == nil {
 				t.Fatal("verifier is nil despite CSI being enabled and configured")
@@ -1262,7 +1262,7 @@ func TestEnablingCSIWithoutTokenVerificationExplainsWhichKeysToSet(t *testing.T)
 
 	// And disabled stays disabled, whatever else is set.
 	cfg.CSI.Enabled = false
-	if v, err := buildK8sVerifier(h.svc); err != nil || v != nil {
+	if v, err := legacyCSIVerifier(h.svc); err != nil || v != nil {
 		t.Errorf("csi.enabled=false should yield (nil, nil); got (%v, %v)", v, err)
 	}
 }

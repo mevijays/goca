@@ -31,11 +31,19 @@ import (
 // minted via the TokenRequest API (which is what a CSI SecretProviderClass's
 // tokenRequests always produces); a long-lived ServiceAccount token Secret
 // carries no pod information and leaves them empty.
+//
+// AuthMethod is the name of the CSI trust domain (k8s_auth_methods row) whose
+// Verifier validated this token. It is set by the caller that performed the
+// lookup - the Verifier itself does not know its own name - and is the axis a
+// binding uses to scope itself to a particular cluster. A token from cluster A
+// and a token from cluster B can carry the same (Namespace, ServiceAccount);
+// AuthMethod is what tells them apart.
 type Identity struct {
 	Namespace      string
 	ServiceAccount string
 	PodName        string
 	PodUID         string
+	AuthMethod     string
 }
 
 // String renders the identity the way Kubernetes itself does, for logging

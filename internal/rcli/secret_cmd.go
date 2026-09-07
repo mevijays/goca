@@ -427,8 +427,8 @@ func newSecretBindCmd() *cobra.Command {
 
 func newSecretBindAddCmd() *cobra.Command {
 	var (
-		namespace, serviceAccount string
-		expiresInDays             int
+		namespace, serviceAccount, authMethod string
+		expiresInDays                         int
 	)
 	cmd := &cobra.Command{
 		Use:   "add <name>",
@@ -441,21 +441,22 @@ func newSecretBindAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := c.BindSecret(ctx, args[0], namespace, serviceAccount, expiresInDays)
+			res, err := c.BindSecret(ctx, args[0], namespace, serviceAccount, authMethod, expiresInDays)
 			if err != nil {
 				return err
 			}
 			if flagJSON {
 				return termio.PrintRaw(res.Raw)
 			}
-			termio.OK("bound %s to namespace=%s service-account=%s",
-				args[0], res.Value.K8sNamespace, res.Value.K8sServiceAccount)
+			termio.OK("bound %s to namespace=%s service-account=%s auth-method=%s",
+				args[0], res.Value.K8sNamespace, res.Value.K8sServiceAccount, res.Value.K8sAuthMethod)
 			return nil
 		},
 	}
 	fl := cmd.Flags()
 	fl.StringVar(&namespace, "namespace", "*", "namespace glob pattern")
 	fl.StringVar(&serviceAccount, "service-account", "*", "ServiceAccount glob pattern")
+	fl.StringVar(&authMethod, "auth-method", "*", "CSI trust domain (k8s auth method) glob pattern; '*' matches any cluster")
 	fl.IntVar(&expiresInDays, "expires-in-days", 0, "revoke automatically after N days (0 = never)")
 	return cmd
 }
@@ -484,7 +485,7 @@ func newSecretBindListCmd() *cobra.Command {
 				fmt.Println("No bindings yet.")
 				return nil
 			}
-			t := termio.NewTable("id", "namespace", "service account", "state", "expires")
+			t := termio.NewTable("id", "namespace", "service account", "auth method", "state", "expires")
 			for _, b := range res.Value {
 				state := "active"
 				if !b.Usable() {
@@ -494,7 +495,7 @@ func newSecretBindListCmd() *cobra.Command {
 				if b.ExpiresAt != nil {
 					expires = b.ExpiresAt.Local().Format("2006-01-02")
 				}
-				t.Row(b.ID, b.K8sNamespace, b.K8sServiceAccount, state, expires)
+				t.Row(b.ID, b.K8sNamespace, b.K8sServiceAccount, b.K8sAuthMethod, state, expires)
 			}
 			t.Flush()
 			return nil

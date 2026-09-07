@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -77,6 +78,18 @@ type ServerConfig struct {
 	Port    int       `yaml:"port"`
 	BaseURL string    `yaml:"base_url"`
 	TLS     TLSConfig `yaml:"tls"`
+
+	// TrustedProxies lists the CIDRs (or single IPs) of reverse proxies that
+	// may set X-Forwarded-For. Only a request whose direct peer is in this
+	// list has its X-Forwarded-For honored - and only the leftmost address
+	// that is NOT itself a trusted proxy is taken as the client IP. With the
+	// list empty (the default) X-Forwarded-For is ignored entirely and the
+	// TCP peer is always the client, which is correct when goca is reached
+	// directly and safe against a spoofed header otherwise. Set it to your
+	// proxy's address (e.g. ["10.0.0.0/8"] or ["172.16.1.10"]) when goca
+	// runs behind one, so audit records and per-IP login throttling see the
+	// real client instead of the proxy.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty"`
 }
 
 // TLSConfig optionally serves the portal over HTTPS.
@@ -439,6 +452,11 @@ func (c *Config) Validate() error {
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}
+	for _, p := range c.Server.TrustedProxies {
+		if _, err := parseCIDROrIP(p); err != nil {
+			return fmt.Errorf("server.trusted_proxies entry %q is not a valid CIDR or IP: %w", p, err)
+		}
+	}
 	if c.Security.SessionTTL == 0 {
 		c.Security.SessionTTL = 8 * time.Hour
 	}
@@ -471,6 +489,28 @@ func (c *Config) Validate() error {
 		c.CA.CRLDays = 7
 	}
 	return nil
+}
+
+// parseCIDROrIP parses a CIDR ("10.0.0.0/8") or a bare IP ("192.168.1.10",
+// treated as /32 or /128) into an IPNet. Used to validate
+// server.trusted_proxies entries.
+func parseCIDROrIP(s string) (*net.IPNet, error) {
+	if _, ipnet, err := net.ParseCIDR(s); err == nil {
+		return ipnet, nil
+	}
+	trimmed := strings.TrimSpace(s)
+	if ip := net.ParseIP(trimmed); ip != nil {
+		ones := "32"
+		if ip.To4() == nil {
+			ones = "128"
+		}
+		// Re-parse with an explicit prefix so the mask has the correct width
+		// for the address family (a bare net.ParseIP is 16 bytes, which would
+		// make a /32 mask an IPv6-space mask).
+		_, ipnet, err := net.ParseCIDR(trimmed + "/" + ones)
+		return ipnet, err
+	}
+	return nil, errors.New("not a valid CIDR or IP")
 }
 
 // GenerateSecrets fills any missing cryptographic material.

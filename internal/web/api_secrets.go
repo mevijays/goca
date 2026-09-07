@@ -188,7 +188,7 @@ func (s *Server) apiSecretMaterialize(w http.ResponseWriter, r *http.Request) er
 	if err != nil {
 		return badRequest("%v", err)
 	}
-	s.vault.AuditWithIP(r.Context(), currentUser(r).Username, "secret.materialize", sec.Name, "", clientIP(r))
+	s.vault.AuditWithIP(r.Context(), currentUser(r).Username, "secret.materialize", sec.Name, "", s.clientIP(r))
 	type fileJSON struct {
 		Name       string `json:"name"`
 		DataBase64 string `json:"data_base64"`
@@ -256,7 +256,7 @@ func (s *Server) apiSecretVersionGet(w http.ResponseWriter, r *http.Request) err
 		return badRequest("%v", err)
 	}
 	s.vault.AuditWithIP(r.Context(), currentUser(r).Username, "secret.version_read", sec.Name,
-		"version="+strconv.FormatInt(version, 10), clientIP(r))
+		"version="+strconv.FormatInt(version, 10), s.clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"secret": newSecretResponse(sec), "version": version, "value_base64": base64.StdEncoding.EncodeToString(pt),
 	})
@@ -304,6 +304,7 @@ func (s *Server) apiSecretBindingCreate(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		K8sNamespace      string `json:"k8s_namespace"`
 		K8sServiceAccount string `json:"k8s_service_account"`
+		K8sAuthMethod     string `json:"k8s_auth_method"`
 		ExpiresInDays     int    `json:"expires_in_days"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
@@ -314,7 +315,7 @@ func (s *Server) apiSecretBindingCreate(w http.ResponseWriter, r *http.Request) 
 		t := time.Now().AddDate(0, 0, body.ExpiresInDays)
 		expiresAt = &t
 	}
-	b, err := s.vault.Bind(r.Context(), sec.Name, body.K8sNamespace, body.K8sServiceAccount, expiresAt, currentUser(r).Username)
+	b, err := s.vault.Bind(r.Context(), sec.Name, body.K8sNamespace, body.K8sServiceAccount, body.K8sAuthMethod, expiresAt, currentUser(r).Username)
 	if err != nil {
 		return badRequest("%v", err)
 	}

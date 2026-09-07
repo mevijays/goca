@@ -18,6 +18,7 @@ import (
 
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/ldapauth"
+	"github.com/mevijays/goca/internal/metrics"
 	"github.com/mevijays/goca/internal/oidcauth"
 	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
@@ -120,6 +121,7 @@ func (m *Manager) EnsureLocalAdmin(ctx context.Context) error {
 func (m *Manager) Authenticate(ctx context.Context, username, password string) (*store.User, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
+		metrics.LoginTotal.WithLabelValues("failure").Inc()
 		return nil, ErrInvalidCredentials
 	}
 
@@ -129,12 +131,15 @@ func (m *Manager) Authenticate(ctx context.Context, username, password string) (
 		u, err := m.st.GetUserByName(ctx, username)
 		if err == nil && u.Source == store.SourceLocal && u.PassHash != "" {
 			if u.Disabled {
+				metrics.LoginTotal.WithLabelValues("failure").Inc()
 				return nil, ErrDisabled
 			}
 			if bcrypt.CompareHashAndPassword([]byte(u.PassHash), []byte(password)) == nil {
 				_ = m.st.TouchLogin(ctx, u.ID)
+				metrics.LoginTotal.WithLabelValues("success").Inc()
 				return u, nil
 			}
+			metrics.LoginTotal.WithLabelValues("failure").Inc()
 			return nil, ErrInvalidCredentials
 		}
 	}
@@ -143,13 +148,22 @@ func (m *Manager) Authenticate(ctx context.Context, username, password string) (
 		id, err := m.ldap.Authenticate(ctx, username, password)
 		if err != nil {
 			if errors.Is(err, ldapauth.ErrInvalidCredentials) {
+				metrics.LoginTotal.WithLabelValues("failure").Inc()
 				return nil, ErrInvalidCredentials
 			}
+			metrics.LoginTotal.WithLabelValues("failure").Inc()
 			return nil, err
 		}
-		return m.syncDirectoryUser(ctx, store.SourceLDAP, id.Username, id.DisplayName, id.Email, id.IsAdmin)
+		u, err := m.syncDirectoryUser(ctx, store.SourceLDAP, id.Username, id.DisplayName, id.Email, id.IsAdmin)
+		if err != nil {
+			metrics.LoginTotal.WithLabelValues("failure").Inc()
+			return nil, err
+		}
+		metrics.LoginTotal.WithLabelValues("success").Inc()
+		return u, nil
 	}
 
+	metrics.LoginTotal.WithLabelValues("failure").Inc()
 	return nil, ErrInvalidCredentials
 }
 
@@ -284,6 +298,7 @@ func (m *Manager) IssueAPIToken(ctx context.Context, u *store.User, name, role s
 	if err != nil {
 		return "", nil, err
 	}
+	metrics.TokenTotal.WithLabelValues("issue").Inc()
 	return plaintext, saved, nil
 }
 
@@ -315,7 +330,11 @@ func (m *Manager) ListAPITokens(ctx context.Context, userID int64) ([]*store.API
 
 // RevokeAPIToken disables a token.
 func (m *Manager) RevokeAPIToken(ctx context.Context, id int64) error {
-	return m.st.RevokeAPIToken(ctx, id)
+	if err := m.st.RevokeAPIToken(ctx, id); err != nil {
+		return err
+	}
+	metrics.TokenTotal.WithLabelValues("revoke").Inc()
+	return nil
 }
 
 //

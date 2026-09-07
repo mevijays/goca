@@ -260,17 +260,79 @@ CREATE INDEX IF NOT EXISTS idx_secret_versions_secret ON secret_versions(secret_
 
 -- Which Kubernetes (namespace, ServiceAccount) pairs may fetch a secret
 -- through the CSI provider. Glob-matched (path.Match syntax) by internal/vault.
+-- k8s_auth_method scopes the binding to a named CSI trust domain (a
+-- k8s_auth_methods row); '*' (the default) matches any trust domain.
 CREATE TABLE IF NOT EXISTS secret_bindings (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   secret_id           INTEGER NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
   k8s_namespace       TEXT NOT NULL DEFAULT '*',
   k8s_service_account TEXT NOT NULL DEFAULT '*',
+  k8s_auth_method     TEXT NOT NULL DEFAULT '*',
   expires_at          TIMESTAMP,
   created_by          TEXT NOT NULL DEFAULT '',
   created_at          TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_secret_bindings_secret ON secret_bindings(secret_id);
 CREATE INDEX IF NOT EXISTS idx_secret_bindings_ns ON secret_bindings(k8s_namespace);
+
+-- Named CSI trust domains: one row per Kubernetes cluster (or group of
+-- clusters sharing an issuer) whose ServiceAccount tokens goca will verify.
+-- reviewer_token_enc is encrypted with the master key (enc: prefix), like the
+-- LDAP bind password. See internal/k8sauth for the verification logic.
+CREATE TABLE IF NOT EXISTS k8s_auth_methods (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                TEXT NOT NULL UNIQUE,
+  audience            TEXT NOT NULL DEFAULT 'goca-csi',
+  issuer_url          TEXT NOT NULL DEFAULT '',
+  api_server_url      TEXT NOT NULL DEFAULT '',
+  ca_cert             TEXT NOT NULL DEFAULT '',
+  reviewer_token_enc  TEXT NOT NULL DEFAULT '',
+  insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
+  disabled            INTEGER NOT NULL DEFAULT 0,
+  created_by          TEXT NOT NULL DEFAULT '',
+  created_at          TIMESTAMP NOT NULL,
+  updated_at          TIMESTAMP NOT NULL
+);
+
+-- Webhooks (G9): named HTTP endpoints that receive signed event notifications
+-- when goca records an audit action. events is a comma-separated list of
+-- action prefixes (e.g. "cert.issue,secret.put"); "*" means every event.
+-- secret_enc is the HMAC signing key, encrypted with the master key.
+CREATE TABLE IF NOT EXISTS webhooks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL UNIQUE,
+  url           TEXT NOT NULL,
+  events        TEXT NOT NULL DEFAULT '*',
+  secret_enc    TEXT NOT NULL DEFAULT '',
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  created_by    TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMP NOT NULL,
+  updated_at    TIMESTAMP NOT NULL
+);
+
+-- webhook_deliveries records the outcome of each delivery attempt so an
+-- operator can see what was sent, to which endpoint, and what it answered.
+-- status is pending|delivered|failed|dead.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  webhook_id    INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event         TEXT NOT NULL,
+  payload       TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'pending',
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  last_status   INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT NOT NULL DEFAULT '',
+  next_attempt  TIMESTAMP,
+  -- claimed_at marks a row as picked up by some dispatcher's tick, so a
+  -- second dispatcher polling the same table (goca run as more than one
+  -- process against a shared database) does not also deliver it. Cleared on
+  -- completion; a claim older than the caller's staleness threshold is
+  -- treated as abandoned (the claiming process crashed) and is reclaimable.
+  claimed_at    TIMESTAMP,
+  created_at    TIMESTAMP NOT NULL,
+  updated_at    TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status);
 `
 
 // schemaPostgres is the PostgreSQL equivalent of schema above. The two are
@@ -509,12 +571,57 @@ CREATE TABLE IF NOT EXISTS secret_bindings (
   secret_id           BIGINT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
   k8s_namespace       TEXT NOT NULL DEFAULT '*',
   k8s_service_account TEXT NOT NULL DEFAULT '*',
+  k8s_auth_method     TEXT NOT NULL DEFAULT '*',
   expires_at          TIMESTAMPTZ,
   created_by          TEXT NOT NULL DEFAULT '',
   created_at          TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_secret_bindings_secret ON secret_bindings(secret_id);
 CREATE INDEX IF NOT EXISTS idx_secret_bindings_ns ON secret_bindings(k8s_namespace);
+
+CREATE TABLE IF NOT EXISTS k8s_auth_methods (
+  id                  BIGSERIAL PRIMARY KEY,
+  name                TEXT NOT NULL UNIQUE,
+  audience            TEXT NOT NULL DEFAULT 'goca-csi',
+  issuer_url          TEXT NOT NULL DEFAULT '',
+  api_server_url      TEXT NOT NULL DEFAULT '',
+  ca_cert             TEXT NOT NULL DEFAULT '',
+  reviewer_token_enc  TEXT NOT NULL DEFAULT '',
+  insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
+  disabled            INTEGER NOT NULL DEFAULT 0,
+  created_by          TEXT NOT NULL DEFAULT '',
+  created_at          TIMESTAMPTZ NOT NULL,
+  updated_at          TIMESTAMPTZ NOT NULL
+);
+
+-- Webhooks (G9): see the SQLite schema above for the column-by-column story.
+CREATE TABLE IF NOT EXISTS webhooks (
+  id            BIGSERIAL PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,
+  url           TEXT NOT NULL,
+  events        TEXT NOT NULL DEFAULT '*',
+  secret_enc    TEXT NOT NULL DEFAULT '',
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  created_by    TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id            BIGSERIAL PRIMARY KEY,
+  webhook_id    BIGINT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event         TEXT NOT NULL,
+  payload       TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'pending',
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  last_status   INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT NOT NULL DEFAULT '',
+  next_attempt  TIMESTAMPTZ,
+  claimed_at    TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status);
 `
 
 // Open connects to (and migrates) the SQLite database at path.
@@ -560,6 +667,7 @@ var addedColumns = []struct{ table, column, ddl string }{
 	{"cas", "subject_key_id", "TEXT NOT NULL DEFAULT ''"},
 	{"cas", "authority_key_id", "TEXT NOT NULL DEFAULT ''"},
 	{"certificates", "renewed_from", "INTEGER"},
+	{"secret_bindings", "k8s_auth_method", "TEXT NOT NULL DEFAULT '*'"},
 }
 
 // migrate brings an existing database up to the current schema.
@@ -704,6 +812,9 @@ func migratePostgres(db *sql.DB) error {
 
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Ping reports whether the database is reachable. Used by the /readyz probe.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 // Path returns the database file location.
 func (s *Store) Path() string { return s.path }
@@ -1641,6 +1752,44 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]*AuditEntry, error)
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, ts, actor, action, target, detail, ip FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*AuditEntry
+	for rows.Next() {
+		var a AuditEntry
+		if err := rows.Scan(&a.ID, &a.TS, &a.Actor, &a.Action, &a.Target, &a.Detail, &a.IP); err != nil {
+			return nil, err
+		}
+		out = append(out, &a)
+	}
+	return out, rows.Err()
+}
+
+// ListAuditPage returns one page of audit entries, newest first, for cursor
+// pagination over the whole log. beforeID is the smallest ID from the previous
+// page (0 for the first page); only entries with a smaller ID are returned, so
+// a page is stable even while new entries are appended. The caller derives the
+// next cursor from the smallest ID in the returned slice. limit is capped at
+// 1000 to bound a single round trip.
+func (s *Store) ListAuditPage(ctx context.Context, beforeID int64, limit int) ([]*AuditEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	q := `SELECT id, ts, actor, action, target, detail, ip FROM audit_log`
+	var args []any
+	if beforeID > 0 {
+		q += ` WHERE id < ?`
+		args = append(args, beforeID)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

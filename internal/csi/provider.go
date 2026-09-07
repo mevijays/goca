@@ -51,6 +51,12 @@ type Provider struct {
 	// into MountRequest to forward - it must match the CSIDriver's
 	// spec.tokenRequests[].audience (see k8s-demo/csi/csidriver.yaml).
 	Audience string
+	// AuthMethod names the CSI trust domain (a k8s_auth_methods row on the
+	// goca server) this provider runs in - typically the cluster's name. It
+	// is sent as the X-Goca-Auth-Method header so the server verifies the
+	// pod's token under exactly this domain's Verifier and scopes secret
+	// bindings to it. Empty means "default".
+	AuthMethod string
 	// DefaultGocaAddress is used when a SecretProviderClass's parameters
 	// omit gocaAddress.
 	DefaultGocaAddress string
@@ -270,6 +276,9 @@ func (p *Provider) fetch(ctx context.Context, gocaAddress, token string, secretN
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	if p.AuthMethod != "" {
+		req.Header.Set("X-Goca-Auth-Method", p.AuthMethod)
+	}
 
 	client := p.HTTPClient
 	if client == nil {

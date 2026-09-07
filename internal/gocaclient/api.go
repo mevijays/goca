@@ -306,6 +306,7 @@ func (c *Client) DeleteUser(ctx context.Context, userRef string) error {
 	return err
 }
 
+// ListAudit returns the most recent audit entries.
 func (c *Client) ListAudit(ctx context.Context, limit int) (Result[[]AuditEntry], error) {
 	path := "/api/v1/audit"
 	if limit > 0 {
@@ -314,6 +315,33 @@ func (c *Client) ListAudit(ctx context.Context, limit int) (Result[[]AuditEntry]
 	var env auditEnvelope
 	raw, err := c.get(ctx, path, &env)
 	return Result[[]AuditEntry]{Value: env.Entries, Raw: raw}, err
+}
+
+// AuditPage is one page of the audit log plus the cursor to fetch the next
+// (older) page. NextCursor is empty when there is no older page.
+type AuditPage struct {
+	Entries    []AuditEntry `json:"entries"`
+	NextCursor string       `json:"next_cursor"`
+}
+
+// ListAuditPage fetches one page of the audit log, newest first. cursor is the
+// NextCursor from the previous page ("" for the first page).
+func (c *Client) ListAuditPage(ctx context.Context, cursor string, limit int) (Result[AuditPage], error) {
+	path := "/api/v1/audit"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	if cursor != "" {
+		if limit > 0 {
+			path += "&"
+		} else {
+			path += "?"
+		}
+		path += "cursor=" + url.QueryEscape(cursor)
+	}
+	var env AuditPage
+	raw, err := c.get(ctx, path, &env)
+	return Result[AuditPage]{Value: env, Raw: raw}, err
 }
 
 //
@@ -422,11 +450,12 @@ func (c *Client) SecretBindings(ctx context.Context, name string) (Result[[]Secr
 	return Result[[]SecretBinding]{Value: env.Bindings, Raw: raw}, err
 }
 
-func (c *Client) BindSecret(ctx context.Context, name, namespace, serviceAccount string, expiresInDays int) (Result[*SecretBinding], error) {
+func (c *Client) BindSecret(ctx context.Context, name, namespace, serviceAccount, authMethod string, expiresInDays int) (Result[*SecretBinding], error) {
 	var out SecretBinding
 	raw, err := c.do(ctx, http.MethodPost, "/api/v1/secrets/"+ref(name)+"/bindings", map[string]any{
 		"k8s_namespace":       namespace,
 		"k8s_service_account": serviceAccount,
+		"k8s_auth_method":     authMethod,
 		"expires_in_days":     expiresInDays,
 	}, &out)
 	return Result[*SecretBinding]{Value: &out, Raw: raw}, err
@@ -436,6 +465,106 @@ func (c *Client) UnbindSecret(ctx context.Context, bindingID int64) error {
 	_, err := c.do(ctx, http.MethodDelete,
 		"/api/v1/secret-bindings/"+strconv.FormatInt(bindingID, 10), nil, nil)
 	return err
+}
+
+//
+// ---------- CSI trust domains (k8s auth methods) ----------
+//
+
+type csiAuthMethodListEnvelope struct {
+	Methods []CsiAuthMethod `json:"methods"`
+}
+
+func (c *Client) ListCsiAuthMethods(ctx context.Context) (Result[[]CsiAuthMethod], error) {
+	var env csiAuthMethodListEnvelope
+	raw, err := c.get(ctx, "/api/v1/csi-auth-methods", &env)
+	return Result[[]CsiAuthMethod]{Value: env.Methods, Raw: raw}, err
+}
+
+func (c *Client) CreateCsiAuthMethod(ctx context.Context, in CsiAuthMethod) (Result[*CsiAuthMethod], error) {
+	var out CsiAuthMethod
+	raw, err := c.do(ctx, http.MethodPost, "/api/v1/csi-auth-methods", in, &out)
+	return Result[*CsiAuthMethod]{Value: &out, Raw: raw}, err
+}
+
+func (c *Client) GetCsiAuthMethod(ctx context.Context, id int64) (Result[*CsiAuthMethod], error) {
+	var out CsiAuthMethod
+	raw, err := c.get(ctx, "/api/v1/csi-auth-methods/"+strconv.FormatInt(id, 10), &out)
+	return Result[*CsiAuthMethod]{Value: &out, Raw: raw}, err
+}
+
+func (c *Client) UpdateCsiAuthMethod(ctx context.Context, id int64, in CsiAuthMethod) (Result[*CsiAuthMethod], error) {
+	var out CsiAuthMethod
+	raw, err := c.do(ctx, http.MethodPatch, "/api/v1/csi-auth-methods/"+strconv.FormatInt(id, 10), in, &out)
+	return Result[*CsiAuthMethod]{Value: &out, Raw: raw}, err
+}
+
+func (c *Client) SetCsiAuthMethodDisabled(ctx context.Context, id int64, disabled bool) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/csi-auth-methods/"+strconv.FormatInt(id, 10)+"/disable",
+		map[string]any{"disabled": disabled}, nil)
+	return err
+}
+
+func (c *Client) DeleteCsiAuthMethod(ctx context.Context, id int64) error {
+	_, err := c.do(ctx, http.MethodDelete, "/api/v1/csi-auth-methods/"+strconv.FormatInt(id, 10), nil, nil)
+	return err
+}
+
+//
+// ---------- Webhooks (G9) ----------
+//
+
+type webhookListEnvelope struct {
+	Webhooks []Webhook `json:"webhooks"`
+}
+
+type webhookDeliveryListEnvelope struct {
+	Deliveries []WebhookDelivery `json:"deliveries"`
+}
+
+func (c *Client) ListWebhooks(ctx context.Context) (Result[[]Webhook], error) {
+	var env webhookListEnvelope
+	raw, err := c.get(ctx, "/api/v1/webhooks", &env)
+	return Result[[]Webhook]{Value: env.Webhooks, Raw: raw}, err
+}
+
+func (c *Client) CreateWebhook(ctx context.Context, in Webhook) (Result[*Webhook], error) {
+	var out Webhook
+	raw, err := c.do(ctx, http.MethodPost, "/api/v1/webhooks", in, &out)
+	return Result[*Webhook]{Value: &out, Raw: raw}, err
+}
+
+func (c *Client) GetWebhook(ctx context.Context, id int64) (Result[*Webhook], error) {
+	var out Webhook
+	raw, err := c.get(ctx, "/api/v1/webhooks/"+strconv.FormatInt(id, 10), &out)
+	return Result[*Webhook]{Value: &out, Raw: raw}, err
+}
+
+func (c *Client) UpdateWebhook(ctx context.Context, id int64, in Webhook) (Result[*Webhook], error) {
+	var out Webhook
+	raw, err := c.do(ctx, http.MethodPatch, "/api/v1/webhooks/"+strconv.FormatInt(id, 10), in, &out)
+	return Result[*Webhook]{Value: &out, Raw: raw}, err
+}
+
+func (c *Client) SetWebhookDisabled(ctx context.Context, id int64, disabled bool) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/webhooks/"+strconv.FormatInt(id, 10)+"/disable",
+		map[string]any{"disabled": disabled}, nil)
+	return err
+}
+
+func (c *Client) DeleteWebhook(ctx context.Context, id int64) error {
+	_, err := c.do(ctx, http.MethodDelete, "/api/v1/webhooks/"+strconv.FormatInt(id, 10), nil, nil)
+	return err
+}
+
+func (c *Client) ListWebhookDeliveries(ctx context.Context, id int64, limit int) (Result[[]WebhookDelivery], error) {
+	var env webhookDeliveryListEnvelope
+	path := "/api/v1/webhooks/" + strconv.FormatInt(id, 10) + "/deliveries"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	raw, err := c.get(ctx, path, &env)
+	return Result[[]WebhookDelivery]{Value: env.Deliveries, Raw: raw}, err
 }
 
 //

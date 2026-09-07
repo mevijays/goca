@@ -23,12 +23,27 @@ import (
 type ctxKeyK8sIdentity struct{}
 
 // apiAuthK8s authenticates a JSON request by Kubernetes ServiceAccount
-// bearer token - the CSI-facing counterpart to apiAuth.
+// bearer token - the CSI-facing counterpart to apiAuth. The trust domain is
+// selected by the X-Goca-Auth-Method header (set by the CSI provider from its
+// --auth-method flag); an empty header means "default". The token is verified
+// under exactly that domain's Verifier, so a token from one cluster cannot be
+// presented against a binding scoped to another.
 func (s *Server) apiAuthK8s(h apiHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.k8s == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "the Kubernetes CSI integration is not enabled on this server (csi.enabled is false)",
+				"error": "the Kubernetes CSI integration is not enabled on this server (no CSI trust domains configured)",
+			})
+			return
+		}
+		method := strings.TrimSpace(r.Header.Get("X-Goca-Auth-Method"))
+		if method == "" {
+			method = "default"
+		}
+		verifier, ok := s.k8s.Get(method)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error": "unknown CSI trust domain " + method + ": no such k8s auth method is configured on this server",
 			})
 			return
 		}
@@ -41,11 +56,12 @@ func (s *Server) apiAuthK8s(h apiHandler) http.Handler {
 			return
 		}
 		token := strings.TrimSpace(authz[len("bearer "):])
-		id, err := s.k8s.Verify(r.Context(), token)
+		id, err := verifier.Verify(r.Context(), token)
 		if err != nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "token rejected: " + err.Error()})
 			return
 		}
+		id.AuthMethod = method
 
 		ctx := context.WithValue(r.Context(), ctxKeyK8sIdentity{}, id)
 		if err := h(w, r.WithContext(ctx)); err != nil {
@@ -128,7 +144,7 @@ func (s *Server) fetchOneVaultSecret(r *http.Request, id *k8sauth.Identity, name
 	}
 	authorized := false
 	for _, b := range bindings {
-		if vault.MatchesBinding(b, id.Namespace, id.ServiceAccount) {
+		if vault.MatchesBinding(b, id.Namespace, id.ServiceAccount, id.AuthMethod) {
 			authorized = true
 			break
 		}
@@ -141,7 +157,8 @@ func (s *Server) fetchOneVaultSecret(r *http.Request, id *k8sauth.Identity, name
 	if err != nil {
 		return vaultFetchResult{SecretName: name, Error: err.Error()}
 	}
-	s.vault.AuditWithIP(r.Context(), id.String(), "secret.csi_fetch", sec.Name, "pod="+id.PodName, clientIP(r))
+	s.vault.AuditWithIP(r.Context(), id.String(), "secret.csi_fetch", sec.Name,
+		"pod="+id.PodName+" auth_method="+id.AuthMethod, s.clientIP(r))
 
 	files64 := make([]vaultFetchFile, len(files))
 	for i, f := range files {

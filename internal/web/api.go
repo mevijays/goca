@@ -537,7 +537,7 @@ func (s *Server) apiCertDelete(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "cert.delete", c.CommonName,
-		"serial="+c.SerialHex, clientIP(r))
+		"serial="+c.SerialHex, s.clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	return nil
 }
@@ -648,7 +648,7 @@ func (s *Server) apiTokenCreate(w http.ResponseWriter, r *http.Request) error {
 		return badRequestFrom(err)
 	}
 	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "token.create", rec.Name,
-		"role="+rec.Role, clientIP(r))
+		"role="+rec.Role, s.clientIP(r))
 	writeJSON(w, http.StatusCreated, map[string]any{"token": plaintext, "record": rec})
 	return nil
 }
@@ -708,7 +708,7 @@ func (s *Server) apiUserCreate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return badRequestFrom(err)
 	}
-	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.create", u.Username, "role="+u.Role, clientIP(r))
+	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.create", u.Username, "role="+u.Role, s.clientIP(r))
 	writeJSON(w, http.StatusCreated, u)
 	return nil
 }
@@ -759,7 +759,7 @@ func (s *Server) apiUserPatch(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.update", updated.Username, "", clientIP(r))
+	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.update", updated.Username, "", s.clientIP(r))
 	writeJSON(w, http.StatusOK, updated)
 	return nil
 }
@@ -776,18 +776,27 @@ func (s *Server) apiUserDelete(w http.ResponseWriter, r *http.Request) error {
 	if err := s.svc.Store().DeleteUser(r.Context(), id); err != nil {
 		return err
 	}
-	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.delete", target.Username, "", clientIP(r))
+	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.delete", target.Username, "", s.clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	return nil
 }
 
 func (s *Server) apiAudit(w http.ResponseWriter, r *http.Request) error {
-	limit := atoiDefault(r.URL.Query().Get("limit"), 100)
-	entries, err := s.svc.Store().ListAudit(r.Context(), limit)
+	q := r.URL.Query()
+	limit := atoiDefault(q.Get("limit"), 100)
+	cursor := atoiDefault(q.Get("cursor"), 0)
+	entries, err := s.svc.Store().ListAuditPage(r.Context(), int64(cursor), limit)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+	// next_cursor is the smallest ID on this page; pass it back to fetch the
+	// following (older) page. Empty when the page returned fewer than `limit`
+	// rows, i.e. there is no older page.
+	nextCursor := ""
+	if len(entries) == limit && len(entries) > 0 {
+		nextCursor = strconv.FormatInt(entries[len(entries)-1].ID, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "next_cursor": nextCursor})
 	return nil
 }
 

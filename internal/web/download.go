@@ -125,7 +125,7 @@ func (s *Server) serveCADownload(w http.ResponseWriter, r *http.Request, c *stor
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return true
 		}
-		s.svc.AuditWithIP(r.Context(), actorName(r), "ca.key_download", c.Name, "", clientIP(r))
+		s.svc.AuditWithIP(r.Context(), actorName(r), "ca.key_download", c.Name, "", s.clientIP(r))
 		sendFile(w, base+".key", "application/x-pem-file", key)
 	case "crl.pem", "crl.crl", "crl.der":
 		der, pemBytes, err := s.svc.GenerateCRL(r.Context(), c.ID, actorName(r))
@@ -158,7 +158,7 @@ func (s *Server) serveCADownload(w http.ResponseWriter, r *http.Request, c *stor
 			if key, err := s.svc.CAKeyPEM(r.Context(), c); err == nil {
 				entries = append(entries, zipEntry{Name: base + ".key", Data: key})
 			}
-			s.svc.AuditWithIP(r.Context(), actorName(r), "ca.key_download", c.Name, "in bundle.zip", clientIP(r))
+			s.svc.AuditWithIP(r.Context(), actorName(r), "ca.key_download", c.Name, "in bundle.zip", s.clientIP(r))
 		}
 		writeZip(w, base+"-bundle.zip", entries)
 	default:
@@ -216,7 +216,7 @@ func (s *Server) serveCertDownload(w http.ResponseWriter, r *http.Request, c *st
 			return true
 		}
 		s.svc.AuditWithIP(r.Context(), actorName(r), "cert.key_download", c.CommonName,
-			"serial="+c.SerialHex, clientIP(r))
+			"serial="+c.SerialHex, s.clientIP(r))
 		sendFile(w, base+".key", "application/x-pem-file", key)
 	case "chain.pem":
 		caRec, err := s.svc.GetCA(r.Context(), c.CAID)
@@ -251,7 +251,7 @@ func (s *Server) serveCertDownload(w http.ResponseWriter, r *http.Request, c *st
 			return true
 		}
 		s.svc.AuditWithIP(r.Context(), actorName(r), "cert.key_download", c.CommonName,
-			"pkcs12 serial="+c.SerialHex, clientIP(r))
+			"pkcs12 serial="+c.SerialHex, s.clientIP(r))
 		sendFile(w, base+".p12", "application/x-pkcs12", p12)
 	case "bundle.zip":
 		full, _ := s.svc.CertChainPEM(r.Context(), c)
@@ -271,7 +271,7 @@ func (s *Server) serveCertDownload(w http.ResponseWriter, r *http.Request, c *st
 		if key, err := s.svc.CertKeyPEM(r.Context(), c); err == nil {
 			entries = append(entries, zipEntry{Name: base + ".key", Data: key})
 			s.svc.AuditWithIP(r.Context(), actorName(r), "cert.key_download", c.CommonName,
-				"in bundle.zip serial="+c.SerialHex, clientIP(r))
+				"in bundle.zip serial="+c.SerialHex, s.clientIP(r))
 		}
 		entries = append(entries, zipEntry{Name: "README.txt", Data: []byte(certReadme(c))})
 		writeZip(w, base+"-bundle.zip", entries)

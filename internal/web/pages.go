@@ -496,7 +496,7 @@ func (s *Server) handleCertDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "cert.delete", c.CommonName,
-		"serial="+c.SerialHex, clientIP(r))
+		"serial="+c.SerialHex, s.clientIP(r))
 	s.flash(w, r, "success", "Certificate record deleted.")
 	http.Redirect(w, r, "/certificates", http.StatusSeeOther)
 }
@@ -621,7 +621,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.auth.SetPassword(r.Context(), full, next); err != nil {
 		s.flash(w, r, "error", err.Error())
 	} else {
-		s.svc.AuditWithIP(r.Context(), u.Username, "user.password_change", u.Username, "", clientIP(r))
+		s.svc.AuditWithIP(r.Context(), u.Username, "user.password_change", u.Username, "", s.clientIP(r))
 		s.flash(w, r, "success", "Password updated.")
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
@@ -642,7 +642,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
-	s.svc.AuditWithIP(r.Context(), u.Username, "token.create", rec.Name, "role="+rec.Role, clientIP(r))
+	s.svc.AuditWithIP(r.Context(), u.Username, "token.create", rec.Name, "role="+rec.Role, s.clientIP(r))
 	http.Redirect(w, r, "/settings?token="+url.QueryEscape(plaintext), http.StatusSeeOther)
 }
 
@@ -672,7 +672,7 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	if err := s.auth.RevokeAPIToken(r.Context(), id); err != nil {
 		s.flash(w, r, "error", err.Error())
 	} else {
-		s.svc.AuditWithIP(r.Context(), u.Username, "token.revoke", fmt.Sprint(id), "", clientIP(r))
+		s.svc.AuditWithIP(r.Context(), u.Username, "token.revoke", fmt.Sprint(id), "", s.clientIP(r))
 		s.flash(w, r, "success", "Token revoked.")
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
@@ -689,7 +689,7 @@ func (s *Server) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 		s.flash(w, r, "error", err.Error())
 	} else {
 		s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.create", u.Username,
-			"role="+u.Role, clientIP(r))
+			"role="+u.Role, s.clientIP(r))
 		s.flash(w, r, "success", fmt.Sprintf("Local user %q created.", u.Username))
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
@@ -712,7 +712,7 @@ func (s *Server) handleUserRole(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.Store().SetUserRole(r.Context(), id, role); err != nil {
 		s.flash(w, r, "error", err.Error())
 	} else {
-		s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.role", target.Username, role, clientIP(r))
+		s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.role", target.Username, role, s.clientIP(r))
 		s.flash(w, r, "success", fmt.Sprintf("%s is now %s.", target.Username, role))
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
@@ -738,7 +738,7 @@ func (s *Server) handleUserDisable(w http.ResponseWriter, r *http.Request) {
 		_ = s.svc.Store().DeleteUserSessions(r.Context(), id)
 	}
 	s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.disable", target.Username,
-		fmt.Sprintf("disabled=%t", disabled), clientIP(r))
+		fmt.Sprintf("disabled=%t", disabled), s.clientIP(r))
 	s.flash(w, r, "success", fmt.Sprintf("%s %s.", target.Username, map[bool]string{true: "disabled", false: "enabled"}[disabled]))
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
@@ -756,7 +756,7 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.Store().DeleteUser(r.Context(), id); err != nil {
 		s.flash(w, r, "error", err.Error())
 	} else {
-		s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.delete", target.Username, "", clientIP(r))
+		s.svc.AuditWithIP(r.Context(), currentUser(r).Username, "user.delete", target.Username, "", s.clientIP(r))
 		s.flash(w, r, "success", fmt.Sprintf("User %q deleted.", target.Username))
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)

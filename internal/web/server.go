@@ -19,9 +19,12 @@ import (
 	"github.com/mevijays/goca/internal/ca"
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/k8sauth"
+	"github.com/mevijays/goca/internal/metrics"
 	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
 	"github.com/mevijays/goca/internal/vault"
+	"github.com/mevijays/goca/internal/webhooks"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // defaultCSIAudience is used when CSIConfig.Audience is left blank.
@@ -36,13 +39,23 @@ type Server struct {
 	tpl   *templates
 	acme  *acme.Service
 	vault *vault.Service
-	// k8s verifies the ServiceAccount tokens a CSI provider forwards on a
-	// requesting pod's behalf. nil when CSIConfig.Enabled is false - the
-	// vault/fetch handler reports that plainly rather than panicking.
-	k8s *k8sauth.Verifier
+	// k8s is the registry of named ServiceAccount-token verifiers - one per
+	// CSI trust domain (k8s_auth_methods row). nil when no trust domain is
+	// configured - the vault/fetch handler reports that plainly rather than
+	// panicking. The CSI provider names the trust domain it runs in via the
+	// X-Goca-Auth-Method header; see apiAuthK8s.
+	k8s *k8sauth.Registry
 	// logins throttles the two endpoints that check a password - see
 	// ratelimit.go.
 	logins *failCounter
+	// webhooks delivers signed event notifications for audit actions (G9).
+	// It is always non-nil; when no webhook is configured its worker simply
+	// finds nothing to do.
+	webhooks *webhooks.Dispatcher
+	// trustedProxies are the parsed CIDRs from ServerConfig.TrustedProxies.
+	// Only a request whose direct peer is in this list may set
+	// X-Forwarded-For; see clientIP.
+	trustedProxies []*net.IPNet
 }
 
 // Options tune the HTTP listener at run time, overriding the config file.
@@ -67,22 +80,218 @@ func NewServer(svc *ca.Service, mgr *auth.Manager, logger *slog.Logger) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("build vault service: %w", err)
 	}
-	k8s, err := buildK8sVerifier(svc)
-	if err != nil {
-		return nil, fmt.Errorf("build Kubernetes ServiceAccount token verifier: %w", err)
+	if err := migrateLegacyCSIToRow(svc); err != nil {
+		return nil, fmt.Errorf("migrate legacy CSI config: %w", err)
 	}
-	return &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s, logins: newFailCounter()}, nil
+	k8s, err := buildK8sRegistry(svc)
+	if err != nil {
+		return nil, fmt.Errorf("build Kubernetes ServiceAccount token verifiers: %w", err)
+	}
+	// G9: wire the webhook dispatcher as the CA service's event sink, so every
+	// audit write fans out to matching webhooks. The dispatcher only enqueues
+	// durable delivery rows here; a worker in Run performs the HTTP calls.
+	dispatcher := webhooks.New(svc.Store(), svc.Box(), logger, webhooks.Options{})
+	svc.SetEventSink(dispatcher.Emit)
+	s := &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s, logins: newFailCounter(), webhooks: dispatcher}
+	s.trustedProxies = parseTrustedProxies(s.cfg.Server.TrustedProxies)
+	s.logSecurityWarnings()
+	return s, nil
 }
 
-// buildK8sVerifier constructs the CSI provider's token verifier from
-// CSIConfig, or returns nil when the integration is disabled. The reviewer
-// token accepts either an encrypted (enc: prefix) or plaintext value, like
-// database.password - see CSIConfig's doc comment.
-func buildK8sVerifier(svc *ca.Service) (*k8sauth.Verifier, error) {
-	cfg := svc.Config().CSI
-	if !cfg.Enabled {
+// parseTrustedProxies parses CIDR/IP strings into networks. A bare IP is
+// treated as a /32 (or /128). Entries that do not parse are skipped with a
+// warning rather than failing startup - a typo in one proxy address should
+// not take the whole portal down, and Validate already rejects them when the
+// config is loaded through the normal path.
+func parseTrustedProxies(entries []string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, e := range entries {
+		ipnet, err := parseCIDROrIP(e)
+		if err != nil {
+			slog.Default().Warn("skipping unparseable server.trusted_proxies entry", "entry", e, "error", err)
+			continue
+		}
+		out = append(out, ipnet)
+	}
+	return out
+}
+
+// parseCIDROrIP parses a CIDR ("10.0.0.0/8") or a bare IP ("192.168.1.10",
+// treated as /32 or /128) into an IPNet.
+func parseCIDROrIP(s string) (*net.IPNet, error) {
+	if _, ipnet, err := net.ParseCIDR(s); err == nil {
+		return ipnet, nil
+	}
+	trimmed := strings.TrimSpace(s)
+	if ip := net.ParseIP(trimmed); ip != nil {
+		ones := "32"
+		if ip.To4() == nil {
+			ones = "128"
+		}
+		// Re-parse with an explicit prefix so the mask has the correct width
+		// for the address family (a bare net.ParseIP is 16 bytes, which would
+		// make a /32 mask an IPv6-space mask).
+		_, ipnet, err := net.ParseCIDR(trimmed + "/" + ones)
+		return ipnet, err
+	}
+	return nil, fmt.Errorf("not a valid CIDR or IP")
+}
+
+// logSecurityWarnings surfaces the settings that weaken goca's security
+// posture at startup, so they are visible in the service log instead of
+// buried in the config file.
+func (s *Server) logSecurityWarnings() {
+	if s.cfg.Auth.LDAP.InsecureSkipVerify {
+		s.log.Warn("auth.ldap.insecure_skip_verify is true: LDAP server certificates are not verified")
+	}
+	if s.cfg.Auth.OIDC.InsecureSkipVerify {
+		s.log.Warn("auth.oidc.insecure_skip_verify is true: OIDC provider TLS certificates are not verified")
+	}
+	if s.cfg.CSI.Enabled && s.cfg.CSI.InsecureSkipVerify {
+		s.log.Warn("csi.insecure_skip_verify is true: Kubernetes API server TLS certificates are not verified")
+	}
+	if len(s.cfg.Server.TrustedProxies) == 0 {
+		s.log.Info("server.trusted_proxies is empty: X-Forwarded-For will be ignored and the TCP peer is always the client IP")
+	}
+}
+
+// buildK8sRegistry builds the registry of named ServiceAccount-token
+// verifiers - one per CSI trust domain. It reads every enabled
+// k8s_auth_methods row and builds a Verifier from it. If no rows exist but the
+// legacy csi.* config is enabled, that config is registered as a "default"
+// trust domain so existing deployments keep working (a later migration
+// persists it as a real row).
+func buildK8sRegistry(svc *ca.Service) (*k8sauth.Registry, error) {
+	reg := k8sauth.NewRegistry()
+	st := svc.Store()
+	rows, err := st.ListK8sAuthMethodsWithToken(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("list k8s auth methods: %w", err)
+	}
+	for _, row := range rows {
+		if row.Disabled {
+			continue
+		}
+		v, err := verifierFromRow(svc, row)
+		if err != nil {
+			return nil, err
+		}
+		reg.Set(row.Name, v)
+	}
+	if reg.Len() == 0 {
+		v, err := legacyCSIVerifier(svc)
+		if err != nil {
+			return nil, err
+		}
+		if v != nil {
+			reg.Set("default", v)
+		}
+	}
+	return reg, nil
+}
+
+// legacyCSIVerifier returns the Verifier built from the legacy csi.* config
+// block, or (nil, nil) when the integration is disabled. It is the
+// single-trust-domain fallback used when no k8s_auth_methods rows exist.
+func legacyCSIVerifier(svc *ca.Service) (*k8sauth.Verifier, error) {
+	if !svc.Config().CSI.Enabled {
 		return nil, nil
 	}
+	return verifierFromLegacyConfig(svc)
+}
+
+// migrateLegacyCSIToRow persists the legacy csi.* config block as a real
+// "default" k8s_auth_methods row on first start, so the registry becomes
+// row-driven and the config block can be retired. It is a no-op when any
+// trust-domain rows already exist (the operator has moved to the new model)
+// or when the legacy config is disabled / under-configured. The reviewer
+// token is encrypted at rest, like every other stored secret.
+func migrateLegacyCSIToRow(svc *ca.Service) error {
+	cfg := svc.Config().CSI
+	if !cfg.Enabled {
+		return nil
+	}
+	st := svc.Store()
+	rows, err := st.ListK8sAuthMethods(context.Background())
+	if err != nil {
+		return fmt.Errorf("list k8s auth methods: %w", err)
+	}
+	if len(rows) > 0 {
+		return nil // already migrated, or the operator created rows manually
+	}
+	// The legacy config must be complete enough to build a verifier; otherwise
+	// buildK8sRegistry will surface the detailed "which keys to set" error.
+	if cfg.IssuerURL == "" && cfg.APIServerURL == "" {
+		return nil
+	}
+	if cfg.APIServerURL != "" && cfg.IssuerURL == "" && cfg.ReviewerToken == "" {
+		return nil // TokenReview path with no credential; let the verifier error
+	}
+	audience := cfg.Audience
+	if audience == "" {
+		audience = defaultCSIAudience
+	}
+	reviewerTokenEnc := cfg.ReviewerToken
+	if reviewerTokenEnc != "" && !secret.IsEncrypted(reviewerTokenEnc) {
+		reviewerTokenEnc, err = svc.Box().EncryptString(reviewerTokenEnc)
+		if err != nil {
+			return fmt.Errorf("encrypt legacy reviewer token: %w", err)
+		}
+	}
+	_, err = st.CreateK8sAuthMethod(context.Background(), &store.K8sAuthMethod{
+		Name:               "default",
+		Audience:           audience,
+		IssuerURL:          cfg.IssuerURL,
+		APIServerURL:       cfg.APIServerURL,
+		CACert:             cfg.CACert,
+		ReviewerTokenEnc:   reviewerTokenEnc,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		CreatedBy:          "migration",
+	})
+	if err != nil {
+		return fmt.Errorf("create default trust domain row: %w", err)
+	}
+	return nil
+}
+
+// verifierFromRow builds a Verifier from a stored trust-domain row, decrypting
+// its reviewer token first.
+func verifierFromRow(svc *ca.Service, row *store.K8sAuthMethod) (*k8sauth.Verifier, error) {
+	reviewerToken := row.ReviewerTokenEnc
+	if secret.IsEncrypted(reviewerToken) {
+		var err error
+		reviewerToken, err = svc.Box().DecryptString(reviewerToken)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt reviewer token for trust domain %q: %w", row.Name, err)
+		}
+	}
+	audience := row.Audience
+	if audience == "" {
+		audience = defaultCSIAudience
+	}
+	if row.IssuerURL == "" && row.APIServerURL == "" {
+		return nil, fmt.Errorf("trust domain %q has neither issuer_url nor api_server_url set", row.Name)
+	}
+	if row.IssuerURL == "" && reviewerToken == "" {
+		return nil, fmt.Errorf("trust domain %q has api_server_url set but no reviewer token", row.Name)
+	}
+	return k8sauth.New(k8sauth.Config{
+		IssuerURL:          row.IssuerURL,
+		Audience:           audience,
+		InsecureSkipVerify: row.InsecureSkipVerify,
+		APIServerURL:       row.APIServerURL,
+		CACertPEM:          []byte(row.CACert),
+		ReviewerToken:      reviewerToken,
+	})
+}
+
+// verifierFromLegacyConfig constructs a Verifier from the legacy csi.* config
+// block, or returns an error when the integration is enabled but
+// under-configured. The reviewer token accepts either an encrypted (enc:
+// prefix) or plaintext value, like database.password - see CSIConfig's doc
+// comment.
+func verifierFromLegacyConfig(svc *ca.Service) (*k8sauth.Verifier, error) {
+	cfg := svc.Config().CSI
 	reviewerToken := cfg.ReviewerToken
 	if secret.IsEncrypted(reviewerToken) {
 		var err error
@@ -176,6 +385,29 @@ func (s *Server) routes(mux *routeMux) {
 	mux.Handle("GET /static/", staticHandler())
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	// Prometheus scrape endpoint. Admin-gated, unlike a typical unauthenticated
+	// Prometheus endpoint: unlike most services' metrics, these carry a live
+	// goca_auth_login_total{result="success"|"failure"} counter, which is a
+	// real side channel (an unauthenticated network caller could watch
+	// credential-stuffing attempts land in real time, entirely separate from
+	// whatever the login rate limiter itself allows them to observe) plus
+	// per-CA issuance and secret counts - not the "no secret material" case
+	// an open /metrics endpoint is normally excused on. Point Prometheus's
+	// scrape config at it with an admin-role API token
+	// (`goca token create prometheus --role admin`) via
+	// `authorization: {credentials_file: ...}` in prometheus.yml.
+	metricsHandler := promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{})
+	mux.Handle("GET /metrics", s.apiAuth(func(w http.ResponseWriter, r *http.Request) error {
+		metricsHandler.ServeHTTP(w, r)
+		return nil
+	}, true))
+	// Kubernetes-style probes. /livez answers "is the process up" (always 200
+	// once the listener is serving) and /readyz answers "can I take traffic"
+	// (200 only while the database is reachable). Keeping them separate from
+	// /healthz lets a load balancer or k8s liveness probe restart a wedged
+	// process without treating a transient DB blip as a crash, and vice versa.
+	mux.HandleFunc("GET /livez", s.handleLivez)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	// Unauthenticated by design: this endpoint *is* the credential check, and
 	// it is the bootstrap for POST /api/v1/tokens, which is itself behind
 	// apiAuth. Registered here, above the api/apiAdmin helpers, so it cannot
@@ -371,6 +603,25 @@ func (s *Server) routes(mux *routeMux) {
 	apiAdmin("POST /api/v1/secrets/{id}/bindings", s.apiSecretBindingCreate)
 	apiAdmin("DELETE /api/v1/secret-bindings/{id}", s.apiSecretBindingDelete)
 
+	// CSI trust domains (k8s_auth_methods): the named Kubernetes clusters
+	// whose ServiceAccount tokens goca verifies. See api_csi_auth.go.
+	apiAdmin("GET /api/v1/csi-auth-methods", s.apiCsiAuthMethodList)
+	apiAdmin("POST /api/v1/csi-auth-methods", s.apiCsiAuthMethodCreate)
+	apiAdmin("GET /api/v1/csi-auth-methods/{id}", s.apiCsiAuthMethodGet)
+	apiAdmin("PATCH /api/v1/csi-auth-methods/{id}", s.apiCsiAuthMethodUpdate)
+	apiAdmin("POST /api/v1/csi-auth-methods/{id}/disable", s.apiCsiAuthMethodDisable)
+	apiAdmin("DELETE /api/v1/csi-auth-methods/{id}", s.apiCsiAuthMethodDelete)
+
+	// Webhooks (G9): named HTTP endpoints that receive signed event
+	// notifications for audit actions. See api_webhooks.go.
+	apiAdmin("GET /api/v1/webhooks", s.apiWebhookList)
+	apiAdmin("POST /api/v1/webhooks", s.apiWebhookCreate)
+	apiAdmin("GET /api/v1/webhooks/{id}", s.apiWebhookGet)
+	apiAdmin("PATCH /api/v1/webhooks/{id}", s.apiWebhookUpdate)
+	apiAdmin("POST /api/v1/webhooks/{id}/disable", s.apiWebhookDisable)
+	apiAdmin("DELETE /api/v1/webhooks/{id}", s.apiWebhookDelete)
+	apiAdmin("GET /api/v1/webhooks/{id}/deliveries", s.apiWebhookDeliveries)
+
 	// CSI-facing fetch, authenticated by a Kubernetes ServiceAccount token
 	// (internal/k8sauth) rather than a goca session or API token - see
 	// api_vault_fetch.go.
@@ -444,6 +695,9 @@ func (s *Server) Run(ctx context.Context, opts Options) error {
 	// Housekeeping: drop expired sessions once an hour.
 	go s.sessionJanitor(ctx)
 
+	// G9: deliver queued webhook events.
+	go s.webhooks.Run(ctx)
+
 	select {
 	case err := <-errCh:
 		return err
@@ -484,6 +738,30 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version": Version,
 		"setup":   n > 0,
 	})
+}
+
+// handleLivez reports that the process is up and serving. It deliberately
+// does no dependency checks: a liveness probe that fails on a transient DB
+// blip would restart a healthy process and make the outage worse.
+func (s *Server) handleLivez(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// handleReadyz reports whether the server can accept traffic. It pings the
+// database, because every real request needs it; a 503 here tells a load
+// balancer or k8s readiness probe to stop sending traffic until the DB
+// recovers, without restarting the process.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.svc.Store().Ping(ctx); err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready: " + err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ready"))
 }
 
 // Version is stamped by the CLI at start-up.
@@ -539,7 +817,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		s.log.Info("request",
 			"method", r.Method, "path", r.URL.Path, "status", rec.status,
 			"bytes", rec.bytes, "duration", time.Since(start).Round(time.Millisecond).String(),
-			"remote", clientIP(r))
+			"remote", s.clientIP(r))
 	})
 }
 
@@ -562,18 +840,64 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 
 func isAPI(r *http.Request) bool { return strings.HasPrefix(r.URL.Path, "/api/") }
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientIP determines the real client address for audit records and per-IP
+// login throttling.
+//
+// X-Forwarded-For is only honored when the request's direct peer is one of
+// the configured trusted proxies (ServerConfig.TrustedProxies). With no
+// trusted proxies configured, or when the peer is not one of them, the header
+// is ignored entirely and the TCP peer is the client - a non-trusted peer may
+// set X-Forwarded-For to anything, so trusting it would let anyone forge the
+// client IP.
+//
+// When the peer IS a trusted proxy its X-Forwarded-For is credible. The chain
+// is "client, proxy1, proxy2, ...": each proxy appends the address it
+// received the request from, so the rightmost entry is the hop just before
+// this proxy. We walk from the right and return the first entry that is not
+// itself a trusted proxy - that is the real client. An attacker who injects a
+// fake leftmost entry cannot win, because the walk stops at the rightmost
+// non-proxy, which the attacker does not control.
+func (s *Server) clientIP(r *http.Request) string {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		peer = r.RemoteAddr
 	}
-	return host
+	if len(s.trustedProxies) == 0 || !s.isTrustedProxy(peer) {
+		return peer
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		addr := strings.TrimSpace(parts[i])
+		if addr == "" {
+			continue
+		}
+		if !s.isTrustedProxy(addr) {
+			return addr
+		}
+	}
+	// Every entry is a trusted proxy (a chain of proxies with no client
+	// recorded); fall back to the direct peer rather than trusting a
+	// proxy-supplied address.
+	return peer
+}
+
+// isTrustedProxy reports whether addr (an IP literal, possibly with a port)
+// falls inside one of the configured trusted proxy networks.
+func (s *Server) isTrustedProxy(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range s.trustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(vals ...string) string {

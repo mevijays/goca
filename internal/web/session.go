@@ -211,8 +211,8 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// Throttled on the same counters as the API login endpoint, so an
 	// attacker cannot sidestep the limit by switching between the two.
-	if wait := s.loginThrottle(username, clientIP(r)); wait > 0 {
-		s.svc.AuditWithIP(r.Context(), username, "auth.login_throttled", username, "via=form", clientIP(r))
+	if wait := s.loginThrottle(username, s.clientIP(r)); wait > 0 {
+		s.svc.AuditWithIP(r.Context(), username, "auth.login_throttled", username, "via=form", s.clientIP(r))
 		s.renderLogin(w, r, fmt.Sprintf(
 			"Too many failed sign-in attempts. Please try again in %d seconds.", int(wait.Seconds())+1), next)
 		return
@@ -220,7 +220,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	u, err := s.auth.Authenticate(r.Context(), username, password)
 	if err != nil {
-		s.loginFailed(username, clientIP(r))
+		s.loginFailed(username, s.clientIP(r))
 		msg := "Invalid username or password."
 		switch {
 		case errors.Is(err, auth.ErrDisabled):
@@ -230,12 +230,12 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 			// a credential leak.
 			msg = "Sign-in failed: " + err.Error()
 		}
-		s.log.Warn("login failed", "user", username, "remote", clientIP(r), "error", err)
-		s.svc.AuditWithIP(r.Context(), username, "auth.login_failed", username, err.Error(), clientIP(r))
+		s.log.Warn("login failed", "user", username, "remote", s.clientIP(r), "error", err)
+		s.svc.AuditWithIP(r.Context(), username, "auth.login_failed", username, err.Error(), s.clientIP(r))
 		s.renderLogin(w, r, msg, next)
 		return
 	}
-	s.loginSucceeded(username, clientIP(r))
+	s.loginSucceeded(username, s.clientIP(r))
 
 	s.finishLogin(w, r, u, next)
 }
@@ -245,7 +245,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 // when next is empty or not a safe same-site path). Shared by local login
 // and the OIDC callback.
 func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, u *store.User, next string) {
-	token, _, err := s.auth.CreateSession(r.Context(), u, clientIP(r), r.UserAgent())
+	token, _, err := s.auth.CreateSession(r.Context(), u, s.clientIP(r), r.UserAgent())
 	if err != nil {
 		s.renderLogin(w, r, "Could not start a session: "+err.Error(), next)
 		return
@@ -253,7 +253,7 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, u *store.Us
 	s.setCookie(w, r, sessionCookie, token, int(s.cfg.Security.SessionTTL.Seconds()), true)
 	s.csrfToken(w, r)
 	s.svc.AuditWithIP(r.Context(), u.Username, "auth.login", u.Username,
-		"source="+u.Source+" role="+u.Role, clientIP(r))
+		"source="+u.Source+" role="+u.Role, s.clientIP(r))
 	s.log.Info("login", "user", u.Username, "role", u.Role, "source", u.Source)
 
 	dest := "/"
@@ -266,7 +266,7 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, u *store.Us
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		if u, _ := s.userFromRequest(r); u != nil {
-			s.svc.AuditWithIP(r.Context(), u.Username, "auth.logout", u.Username, "", clientIP(r))
+			s.svc.AuditWithIP(r.Context(), u.Username, "auth.logout", u.Username, "", s.clientIP(r))
 		}
 		_ = s.auth.DestroySession(r.Context(), c.Value)
 	}

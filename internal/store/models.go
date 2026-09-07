@@ -236,6 +236,47 @@ type AuditEntry struct {
 	IP     string    `json:"ip"`
 }
 
+// Webhook is a named HTTP endpoint that receives signed event notifications
+// when goca records an audit action. Events is a comma-separated list of
+// action prefixes ("cert.issue,secret.put"); "*" matches every event.
+// SecretEnc is the HMAC signing key, encrypted with the master key (enc:
+// prefix) - it is never returned to callers in the clear.
+type Webhook struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	Events    string    `json:"events"`
+	SecretEnc string    `json:"-"`
+	Disabled  bool      `json:"disabled"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// WebhookDelivery records the outcome of delivering one event to one webhook.
+// Status is pending, delivered, failed, or dead (dead = retries exhausted).
+type WebhookDelivery struct {
+	ID          int64      `json:"id"`
+	WebhookID   int64      `json:"webhook_id"`
+	Event       string     `json:"event"`
+	Payload     string     `json:"payload"`
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	LastStatus  int        `json:"last_status"`
+	LastError   string     `json:"last_error"`
+	NextAttempt *time.Time `json:"next_attempt,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// Webhook delivery statuses.
+const (
+	WebhookStatusPending   = "pending"
+	WebhookStatusDelivered = "delivered"
+	WebhookStatusFailed    = "failed"
+	WebhookStatusDead      = "dead"
+)
+
 // CertFilter narrows a certificate search.
 type CertFilter struct {
 	Query       string // matches CN, subject, serial, SANs, requester
@@ -329,12 +370,21 @@ type SecretVersion struct {
 // SecretBinding authorizes a Kubernetes (namespace, ServiceAccount) pair -
 // each glob-matched with path.Match syntax by internal/vault - to fetch a
 // secret through the CSI provider. "*" matches anything.
+//
+// K8sAuthMethod scopes the binding to a named CSI trust domain (a
+// k8s_auth_methods row). "*" (the default) matches any trust domain, which is
+// the pre-multi-cluster behavior; a specific name (e.g. "cluster-a") means
+// only pods whose token was verified under that trust domain may use this
+// binding. This is what stops a (namespace, ServiceAccount) pair that exists
+// in two different clusters from being able to fetch a secret bound to one of
+// them from the other.
 type SecretBinding struct {
 	ID                int64      `json:"id"`
 	SecretID          int64      `json:"secret_id"`
 	SecretName        string     `json:"secret_name,omitempty"` // filled in by joined list queries
 	K8sNamespace      string     `json:"k8s_namespace"`
 	K8sServiceAccount string     `json:"k8s_service_account"`
+	K8sAuthMethod     string     `json:"k8s_auth_method"`
 	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
 	CreatedBy         string     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -343,6 +393,30 @@ type SecretBinding struct {
 // Usable reports whether this binding is still in effect.
 func (b *SecretBinding) Usable() bool {
 	return b.ExpiresAt == nil || time.Now().Before(*b.ExpiresAt)
+}
+
+// K8sAuthMethod is one named CSI trust domain: the set of parameters needed
+// to verify ServiceAccount tokens from one Kubernetes cluster (or a group of
+// clusters that share an issuer). The CSI provider names the trust domain it
+// is running in (via --auth-method), and the server verifies the pod's token
+// under that domain's parameters before checking the secret's bindings.
+//
+// ReviewerToken is stored encrypted (enc: prefix) with the master key, like
+// the LDAP bind password and OIDC client secret; the web layer decrypts it
+// when building a k8sauth.Verifier.
+type K8sAuthMethod struct {
+	ID                 int64     `json:"id"`
+	Name               string    `json:"name"`
+	Audience           string    `json:"audience"`
+	IssuerURL          string    `json:"issuer_url"`
+	APIServerURL       string    `json:"api_server_url"`
+	CACert             string    `json:"ca_cert"`
+	ReviewerTokenEnc   string    `json:"-"` // never serialized; encrypted with the master key
+	InsecureSkipVerify bool      `json:"insecure_skip_verify"`
+	Disabled           bool      `json:"disabled"`
+	CreatedBy          string    `json:"created_by"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // Stats summarises the database for the dashboard.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/mevijays/goca/internal/ca"
 	"github.com/mevijays/goca/internal/config"
+	"github.com/mevijays/goca/internal/metrics"
 	"github.com/mevijays/goca/internal/pqcrypt"
 	"github.com/mevijays/goca/internal/store"
 )
@@ -127,6 +128,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*store.Secret, er
 		return nil, err
 	}
 	s.audit(ctx, in.Actor, "secret.create", name, "type="+typ)
+	metrics.SecretCreatedTotal.WithLabelValues(typ).Inc()
 	return sec, nil
 }
 
@@ -190,6 +192,7 @@ func (s *Service) Delete(ctx context.Context, name, actor string) error {
 		return err
 	}
 	s.audit(ctx, actor, "secret.delete", sec.Name, fmt.Sprintf("type=%s versions=%d", sec.Type, sec.CurrentVersion))
+	metrics.SecretDeletedTotal.Inc()
 	return nil
 }
 
@@ -228,6 +231,7 @@ func (s *Service) Put(ctx context.Context, name string, value []byte, contentTyp
 		return nil, err
 	}
 	s.audit(ctx, actor, "secret.put", sec.Name, fmt.Sprintf("version=%d size=%d", v.Version, len(value)))
+	metrics.SecretPutTotal.WithLabelValues(sec.Type).Inc()
 	return v, nil
 }
 
@@ -236,13 +240,20 @@ func (s *Service) Put(ctx context.Context, name string, value []byte, contentTyp
 func (s *Service) GetLatest(ctx context.Context, name string) (*store.Secret, []byte, error) {
 	sec, err := s.resolveOpenable(ctx, name)
 	if err != nil {
+		metrics.SecretReadTotal.WithLabelValues("", "denied").Inc()
 		return nil, nil, err
 	}
 	v, err := s.st.GetLatestSecretVersion(ctx, sec.ID)
 	if err != nil {
+		metrics.SecretReadTotal.WithLabelValues(sec.Type, "denied").Inc()
 		return nil, nil, err
 	}
 	pt, err := s.open(sec, v)
+	if err != nil {
+		metrics.SecretReadTotal.WithLabelValues(sec.Type, "denied").Inc()
+		return nil, nil, err
+	}
+	metrics.SecretReadTotal.WithLabelValues(sec.Type, "success").Inc()
 	return sec, pt, err
 }
 
@@ -402,31 +413,37 @@ func (s *Service) materializeCertificate(ctx context.Context, sec *store.Secret)
 // Bind authorizes a Kubernetes (namespace, ServiceAccount) pair to fetch a
 // secret. Either may be "*" to match anything; both are glob-matched with
 // path.Match syntax by MatchesBinding / the CSI provider added in a later
-// phase.
-func (s *Service) Bind(ctx context.Context, name, namespace, serviceAccount string, expiresAt *time.Time, actor string) (*store.SecretBinding, error) {
+// phase. authMethod scopes the binding to a named CSI trust domain; "*" (the
+// default) matches any trust domain.
+func (s *Service) Bind(ctx context.Context, name, namespace, serviceAccount, authMethod string, expiresAt *time.Time, actor string) (*store.SecretBinding, error) {
 	sec, err := s.st.GetSecretByName(ctx, normalizeName(name))
 	if err != nil {
 		return nil, err
 	}
 	ns := nzGlob(namespace)
 	sa := nzGlob(serviceAccount)
+	method := nzGlob(authMethod)
 	if _, err := path.Match(ns, "probe"); err != nil {
 		return nil, fmt.Errorf("invalid namespace pattern %q: %w", ns, err)
 	}
 	if _, err := path.Match(sa, "probe"); err != nil {
 		return nil, fmt.Errorf("invalid service account pattern %q: %w", sa, err)
 	}
+	if _, err := path.Match(method, "probe"); err != nil {
+		return nil, fmt.Errorf("invalid auth method pattern %q: %w", method, err)
+	}
 	b, err := s.st.CreateSecretBinding(ctx, &store.SecretBinding{
 		SecretID:          sec.ID,
 		K8sNamespace:      ns,
 		K8sServiceAccount: sa,
+		K8sAuthMethod:     method,
 		ExpiresAt:         expiresAt,
 		CreatedBy:         actor,
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, actor, "secret.bind", sec.Name, fmt.Sprintf("namespace=%s sa=%s", ns, sa))
+	s.audit(ctx, actor, "secret.bind", sec.Name, fmt.Sprintf("namespace=%s sa=%s auth_method=%s", ns, sa, method))
 	return b, nil
 }
 
@@ -448,15 +465,27 @@ func (s *Service) Bindings(ctx context.Context, name string) ([]*store.SecretBin
 	return s.st.ListSecretBindings(ctx, sec.ID)
 }
 
-// MatchesBinding reports whether a binding authorizes the given namespace
-// and service account, honoring "*" glob patterns and expiry.
-func MatchesBinding(b *store.SecretBinding, namespace, serviceAccount string) bool {
+// MatchesBinding reports whether a binding authorizes the given namespace,
+// service account, and CSI trust domain, honoring "*" glob patterns and
+// expiry.
+//
+// authMethod is the name of the trust domain (k8s_auth_methods row) whose
+// Verifier validated the requesting token. A binding's K8sAuthMethod of "*"
+// (the default) authorizes any trust domain; otherwise it must glob-match the
+// request's method. This is what stops a token from cluster A from satisfying
+// a binding scoped to cluster B even when both use the same (namespace,
+// ServiceAccount).
+func MatchesBinding(b *store.SecretBinding, namespace, serviceAccount, authMethod string) bool {
 	if !b.Usable() {
 		return false
 	}
 	nsOK, _ := path.Match(b.K8sNamespace, namespace)
 	saOK, _ := path.Match(b.K8sServiceAccount, serviceAccount)
-	return nsOK && saOK
+	methodOK := b.K8sAuthMethod == "*"
+	if !methodOK {
+		methodOK, _ = path.Match(b.K8sAuthMethod, authMethod)
+	}
+	return nsOK && saOK && methodOK
 }
 
 //

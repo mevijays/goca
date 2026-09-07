@@ -19,6 +19,7 @@ the Kubernetes walkthrough. For the CSI provider specifically, see
 - [Versions](#versions)
 - [Managing secrets: CLI, web portal, REST API](#managing-secrets-cli-web-portal-rest-api)
 - [Kubernetes: mounting secrets with the CSI provider](#kubernetes-mounting-secrets-with-the-csi-provider)
+- [GitOps: managing secrets and bindings from git](gitops.md)
 - [Key custody and what compromise means](#key-custody-and-what-compromise-means)
 - [Rotation](#rotation)
 - [Threat model and limitations](#threat-model-and-limitations)
@@ -234,6 +235,12 @@ error binding enforcement produces, writing a new version rotated the mounted fi
 within one `rotationPollInterval` with no pod restart, and the audit log captured
 every fetch under the caller's verified Kubernetes identity
 (`system:serviceaccount:<namespace>:<name>`).
+
+**Managing secrets and bindings from git:** `gocactl apply` / `gocactl diff`
+make the secret manager GitOps-friendly — declare secrets and their bindings in
+a manifest, converge with `apply`, gate on drift with `diff` in CI, and let
+ArgoCD own the `SecretProviderClass` side. See
+**[gitops.md](gitops.md)** for the manifest format and the full ArgoCD pattern.
 
 ## Key custody and what compromise means
 
