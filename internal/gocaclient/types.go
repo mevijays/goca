@@ -365,8 +365,17 @@ func (b *SecretBinding) Usable() bool {
 // of clusters sharing an issuer) whose ServiceAccount tokens goca verifies.
 // ReviewerToken is write-only: it is accepted on create/update (plaintext or
 // enc:) and never returned by the server.
+// CsiAuthMethod is both the create/update request and the response shape.
+// ID/CreatedBy/CreatedAt/UpdatedAt are server-set: omitempty covers Create,
+// where they are always the zero value, but omitempty cannot help Update -
+// after a Get/List they are real, non-zero values, and the server decodes
+// with DisallowUnknownFields regardless of value, so sending them at all is
+// a hard 400. Never build an Update request by copying a fetched value
+// wholesale (`in := *fetched`); build a fresh literal naming only the fields
+// that are actually changing, the way internal/rcli/csi_auth_cmd.go does.
+// See TestCreateRequestsRoundTripThroughRealMarshalling.
 type CsiAuthMethod struct {
-	ID                 int64  `json:"id"`
+	ID                 int64  `json:"id,omitempty"`
 	Name               string `json:"name"`
 	Audience           string `json:"audience"`
 	IssuerURL          string `json:"issuer_url"`
@@ -375,9 +384,9 @@ type CsiAuthMethod struct {
 	ReviewerToken      string `json:"reviewer_token,omitempty"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 	Disabled           bool   `json:"disabled"`
-	CreatedBy          string `json:"created_by"`
-	CreatedAt          string `json:"created_at"`
-	UpdatedAt          string `json:"updated_at"`
+	CreatedBy          string `json:"created_by,omitempty"`
+	CreatedAt          string `json:"created_at,omitempty"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
 }
 
 // SecretFile is one materialized file. Data is already base64-decoded.
@@ -391,16 +400,19 @@ type SecretFile struct {
 // action prefixes ("cert.issue,secret.put"); "*" matches every event. Secret
 // is write-only: it is accepted on create/update (plaintext or enc:) and never
 // returned by the server.
+// Webhook is both the create/update request and the response shape. See
+// CsiAuthMethod's doc comment for why ID/CreatedBy/CreatedAt/UpdatedAt are
+// omitempty - the same reasoning applies here.
 type Webhook struct {
-	ID        int64  `json:"id"`
+	ID        int64  `json:"id,omitempty"`
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	Events    string `json:"events"`
 	Secret    string `json:"secret,omitempty"`
 	Disabled  bool   `json:"disabled"`
-	CreatedBy string `json:"created_by"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	CreatedBy string `json:"created_by,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // WebhookDelivery records the outcome of delivering one event to one webhook.
