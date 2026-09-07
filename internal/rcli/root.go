@@ -50,11 +50,21 @@ var (
 // Execute runs gocactl.
 func Execute() int {
 	gocaclient.Version = Version
-	if err := newRootCmd().Execute(); err != nil {
+	err := newRootCmd().Execute()
+	if err == nil {
+		return 0
+	}
+	// Drift is an expected, reportable outcome of `diff` - not a failure of the
+	// tool. It gets its own exit code (1) so a CI gate can distinguish "the
+	// server drifted from git" (fix by applying) from "the command broke"
+	// (exit 2: bad manifest, unreachable server, auth failure, ...).
+	var drift *DriftError
+	if errors.As(err, &drift) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	return 0
+	fmt.Fprintln(os.Stderr, "error:", err)
+	return 2
 }
 
 // ctx returns a context cancelled on SIGINT/SIGTERM, so a long download stops
@@ -136,6 +146,8 @@ binary, since it needs the database and the host itself.`),
 		newACMECmd(),
 		newCsiAuthCmd(),
 		newWebhookCmd(),
+		newApplyCmd(),
+		newDiffCmd(),
 		newUserCmd(),
 		newTokenCmd(),
 		newAuditCmd(),
