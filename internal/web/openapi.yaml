@@ -69,6 +69,8 @@ tags:
     description: 🔒 admin — the secret manager. See SECRETS.md for the design, key custody and threat model.
   - name: Kubernetes CSI
     description: The workload-facing endpoint the Secrets Store CSI Driver provider calls. Authenticated by a Kubernetes ServiceAccount token, not a goca token.
+  - name: External Secrets Operator
+    description: The endpoint an ESO webhook SecretStore calls. Same Kubernetes ServiceAccount token auth as Kubernetes CSI, reshaped for ESO's request/response contract. See docs/eso.md.
 
 paths:
   /auth/login:
@@ -431,6 +433,61 @@ paths:
                               data_base64: { type: string }
                         error: { type: string }
         "401": { description: "the ServiceAccount token was rejected" }
+        "503": { description: "the Kubernetes CSI integration is not enabled on this server" }
+
+  /eso/secret:
+    get:
+      tags: [External Secrets Operator]
+      summary: Fetch one bound secret for an ESO webhook SecretStore
+      description: |
+        Called by ESO's webhook provider, per `data[]` entry in an
+        `ExternalSecret`. Authenticated the same way as `/vault/fetch` — a
+        Kubernetes ServiceAccount bearer token, verified under the trust
+        domain named by `X-Goca-Auth-Method` — but ESO's webhook provider has
+        no equivalent of CSI's per-pod token, so the token here is whatever
+        static credential a SecretStore was given. See docs/eso.md for why
+        that means one SecretStore per tenant namespace, not one shared
+        cluster-wide credential, is what makes namespace isolation real.
+
+        `key` and `property` arrive URL-query-escaped: ESO's webhook provider
+        escapes `{{ .remoteRef.key }}` and `{{ .remoteRef.property }}` before
+        building the URL, so a secret name containing "/" round-trips
+        correctly as a query parameter rather than an extra path segment.
+
+        A secret that does not exist and one that exists but is not bound to
+        the caller return an identical error, exactly like `/vault/fetch`.
+      security: []   # authenticated by a Kubernetes ServiceAccount token instead
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema: { type: string }
+          description: The goca secret name (`{{ .remoteRef.key }}` in ESO's SecretStore).
+        - name: property
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Which file to return. Required when the secret has more than one
+            (a `certificate` secret: `tls.crt`, `tls.key`, `ca.crt`) — omitting
+            it is a 400 listing what's available, not a guess. A `kv`/`file`
+            secret has exactly one file and needs no `property`.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  property: { type: string, description: "the file name that was returned" }
+                  version: { type: string }
+                  value: { type: string, description: "present only when the content is valid UTF-8" }
+                  value_base64: { type: string, description: "always present; safe for binary content" }
+        "400": { description: "missing key, or property is required/unknown for this secret" }
+        "401": { description: "the ServiceAccount token was rejected" }
+        "404": { description: "no such secret, or it exists but is not bound to this identity — identical either way" }
         "503": { description: "the Kubernetes CSI integration is not enabled on this server" }
 
   /health:

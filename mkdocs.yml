@@ -25,9 +25,12 @@ nav:
   - Remote Client (gocactl): gocactl.md
   - ACME (cert-manager): acme-eab.md
   - Secret Manager: secrets.md
+  - GitOps (apply/diff): gitops.md
+  - Observability (metrics/webhooks): observability.md
   - Kubernetes:
       - cert-manager demo: kubernetes/cert-manager.md
       - CSI driver demo: kubernetes/csi.md
+      - External Secrets Operator: eso.md
 
 markdown_extensions:
   - fenced_code

@@ -626,6 +626,12 @@ func (s *Server) routes(mux *routeMux) {
 	// (internal/k8sauth) rather than a goca session or API token - see
 	// api_vault_fetch.go.
 	mux.Handle("POST /api/v1/vault/fetch", s.apiAuthK8s(s.apiVaultFetch))
+
+	// External Secrets Operator (ESO)-facing fetch - same auth and
+	// authorization as the CSI path above, reshaped for ESO's webhook
+	// provider (a GET with query parameters, one secret per request,
+	// JSONPath-friendly response). See api_eso.go and docs/eso.md.
+	mux.Handle("GET /api/v1/eso/secret", s.apiAuthK8s(s.apiESOFetchSecret))
 }
 
 // Run starts the HTTP server and blocks until the context is cancelled.

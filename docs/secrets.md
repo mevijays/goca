@@ -228,6 +228,15 @@ installing the upstream driver, the provider DaemonSet, RBAC, example
 `SecretProviderClass`es for both a `kv` and a `certificate` secret, and a live
 cross-namespace denial + rotation demonstration.
 
+Need a real Kubernetes `Secret` object instead of a mounted file — an env
+var via `secretKeyRef`, or another controller that only reads `Secret`s?
+**[eso.md](eso.md)** covers the same trust domains and the same binding
+model, consumed through External Secrets Operator's webhook provider
+instead. Multiple clusters, not just one, can be registered as trust
+domains — `gocactl csi-auth list` shows what's configured; each is a
+`k8s_auth_methods` row, managed via `gocactl csi-auth create/update/disable`
+with no server restart, not a `config.yaml` edit.
+
 Verified against a real disposable `kind` cluster running the actual upstream
 driver: mounted file contents matched for both secret types, a pod running as an
 unbound ServiceAccount was denied with the exact "not found or not authorized"
