@@ -32,7 +32,16 @@ func NewNonceManager() *NonceManager {
 // not, per §6.5.
 func (m *NonceManager) New() string {
 	b := make([]byte, 24)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand.Read is documented (Go 1.24+, and this module requires
+		// go 1.26) to never return an error - it crashes the program
+		// irrecoverably first - so reaching here can only mean a build using
+		// an older toolchain than go.mod requires. Every other rand.Read call
+		// site in this codebase checks this error; this one silently
+		// discarded it, which would have handed out a nonce that might not
+		// be genuinely random. Panic rather than silently continue.
+		panic("acme: crypto/rand.Read failed: " + err.Error())
+	}
 	n := base64.RawURLEncoding.EncodeToString(b)
 
 	m.mu.Lock()
