@@ -55,6 +55,18 @@ func esoFetch(h *harness, key, property string) (int, map[string]any) {
 	return rec.Code, out
 }
 
+// esoFetchAll is esoFetch with ?all=true - the ESO native provider's
+// GetSecretMap path.
+func esoFetchAll(h *harness, key string) (int, map[string]any) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/eso/secret?key="+key+"&all=true", nil)
+	req.Header.Set("Authorization", "Bearer pod-token")
+	req.Header.Set("X-Goca-Auth-Method", "test-cluster")
+	rec := h.do(req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
 // TestESOFetchKVSecret is the plain happy path: a bound identity fetching a
 // kv secret gets its plaintext back, both raw (value) and base64
 // (value_base64), and single-file secrets need no ?property=.
@@ -140,6 +152,66 @@ func TestESOFetchCertificateSecret(t *testing.T) {
 		if val == "" {
 			t.Fatalf("%s: empty value", part)
 		}
+	}
+
+	// ?all=true returns every part in one response, base64-encoded, instead
+	// of requiring one request per property - this is what the ESO-native
+	// provider's GetSecretMap uses to sync a whole multi-file secret from a
+	// single ExternalSecret data entry.
+	code, out = esoFetchAll(h, "team-a/tls")
+	if code != http.StatusOK {
+		t.Fatalf("fetch all = %d: %v", code, out)
+	}
+	filesRaw, ok := out["files"].(map[string]any)
+	if !ok {
+		t.Fatalf("response has no files map: %v", out)
+	}
+	for _, part := range []string{"tls.crt", "tls.key", "ca.crt"} {
+		b64, ok := filesRaw[part].(string)
+		if !ok || b64 == "" {
+			t.Fatalf("files[%q] missing or empty: %v", part, filesRaw)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			t.Fatalf("files[%q] is not valid base64: %v", part, err)
+		}
+		if len(decoded) == 0 {
+			t.Fatalf("files[%q] decoded to nothing", part)
+		}
+	}
+	if len(filesRaw) != 3 {
+		t.Fatalf("files has %d entries, want 3: %v", len(filesRaw), filesRaw)
+	}
+}
+
+// TestESOFetchAllOnSingleFileSecret confirms ?all=true also works on an
+// ordinary kv secret - a 1-entry files map, not a special case or an error.
+func TestESOFetchAllOnSingleFileSecret(t *testing.T) {
+	h := esoHarness(t, "system:serviceaccount:team-a:eso-reader")
+
+	v := h.srv.vault
+	if _, err := v.Create(h.t.Context(), vault.CreateInput{Name: "team-a/simple", Type: "kv", Actor: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Put(h.t.Context(), "team-a/simple", []byte("hello"), "text/plain", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Bind(h.t.Context(), "team-a/simple", "team-a", "eso-reader", "test-cluster", nil, "admin"); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := esoFetchAll(h, "team-a/simple")
+	if code != http.StatusOK {
+		t.Fatalf("fetch all = %d: %v", code, out)
+	}
+	files, _ := out["files"].(map[string]any)
+	if len(files) != 1 {
+		t.Fatalf("files = %v, want exactly 1 entry", files)
+	}
+	b64, _ := files["text/plain"].(string)
+	decoded, _ := base64.StdEncoding.DecodeString(b64)
+	if string(decoded) != "hello" {
+		t.Fatalf("decoded value = %q, want hello", decoded)
 	}
 }
 

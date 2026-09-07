@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"unicode/utf8"
 
@@ -40,6 +41,7 @@ func (s *Server) apiESOFetchSecret(w http.ResponseWriter, r *http.Request) error
 		return badRequest("query parameter %q is required (ESO: template it from {{ .remoteRef.key }})", "key")
 	}
 	property := r.URL.Query().Get("property")
+	all := r.URL.Query().Get("all") == "true"
 
 	sec, err := s.vault.Get(r.Context(), key)
 	if err != nil {
@@ -67,6 +69,27 @@ func (s *Server) apiESOFetchSecret(w http.ResponseWriter, r *http.Request) error
 		return badRequest("%v", err)
 	}
 
+	if all {
+		// Every file, regardless of count - the ESO-native provider's
+		// GetSecretMap path (one ExternalSecret data entry syncing a whole
+		// multi-file secret, rather than one entry per file). ?property= is
+		// meaningless combined with ?all=true and is ignored rather than
+		// rejected, so a caller that always sends both doesn't need special
+		// casing.
+		names := make([]string, len(files))
+		out := make(map[string]string, len(files))
+		for i, f := range files {
+			names[i] = f.Name
+			out[f.Name] = base64.StdEncoding.EncodeToString(f.Data)
+		}
+		s.vault.AuditWithIP(r.Context(), id.String(), "secret.eso_fetch", sec.Name,
+			fmt.Sprintf("property=* (%d files) auth_method=%s", len(files), id.AuthMethod), s.clientIP(r))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"name": sec.Name, "version": version, "files": out,
+		})
+		return nil
+	}
+
 	var file *vault.File
 	switch {
 	case property != "":
@@ -89,12 +112,13 @@ func (s *Server) apiESOFetchSecret(w http.ResponseWriter, r *http.Request) error
 		// A certificate secret with no ?property= is ambiguous - tls.crt,
 		// tls.key and ca.crt are three different files, and guessing which
 		// one an ExternalSecret wanted would be a worse failure mode than
-		// asking for it explicitly.
+		// asking for it explicitly. ?all=true (above) is the way to get all
+		// of them at once.
 		names := make([]string, len(files))
 		for i, f := range files {
 			names[i] = f.Name
 		}
-		return badRequest("secret %q has %d parts; add ?property= to select one (e.g. %v)", key, len(files), names)
+		return badRequest("secret %q has %d parts; add ?property= to select one, or ?all=true for all of them (e.g. %v)", key, len(files), names)
 	}
 
 	s.vault.AuditWithIP(r.Context(), id.String(), "secret.eso_fetch", sec.Name,

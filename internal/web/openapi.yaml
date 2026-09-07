@@ -438,20 +438,26 @@ paths:
   /eso/secret:
     get:
       tags: [External Secrets Operator]
-      summary: Fetch one bound secret for an ESO webhook SecretStore
+      summary: Fetch one bound secret for an ESO SecretStore
       description: |
-        Called by ESO's webhook provider, per `data[]` entry in an
-        `ExternalSecret`. Authenticated the same way as `/vault/fetch` — a
-        Kubernetes ServiceAccount bearer token, verified under the trust
-        domain named by `X-Goca-Auth-Method` — but ESO's webhook provider has
-        no equivalent of CSI's per-pod token, so the token here is whatever
-        static credential a SecretStore was given. See docs/eso.md for why
-        that means one SecretStore per tenant namespace, not one shared
-        cluster-wide credential, is what makes namespace isolation real.
+        Called either by ESO's generic webhook provider (per `data[]` entry
+        in an `ExternalSecret`) or by goca's own ESO provider
+        (external-secrets/external-secrets, provider type `goca`), which
+        mints a fresh Kubernetes ServiceAccount token via the TokenRequest
+        API on every call instead of presenting a long-lived static one.
+        Authenticated the same way as `/vault/fetch` — a Kubernetes
+        ServiceAccount bearer token, verified under the trust domain named by
+        `X-Goca-Auth-Method`. See docs/eso.md for the isolation trade-off
+        between the two: the generic webhook provider has no live per-request
+        token, only whatever a SecretStore's referenced Secret holds, so one
+        SecretStore per tenant namespace is what makes namespace isolation
+        real there; the native goca provider mints live, audience-bound
+        tokens per fetch, scoped by Kubernetes RBAC on the ESO controller's
+        own ServiceAccount instead.
 
-        `key` and `property` arrive URL-query-escaped: ESO's webhook provider
-        escapes `{{ .remoteRef.key }}` and `{{ .remoteRef.property }}` before
-        building the URL, so a secret name containing "/" round-trips
+        `key` and `property` arrive URL-query-escaped: both providers escape
+        `{{ .remoteRef.key }}` and `{{ .remoteRef.property }}` before
+        building the request, so a secret name containing "/" round-trips
         correctly as a query parameter rather than an extra path segment.
 
         A secret that does not exist and one that exists but is not bound to
@@ -469,22 +475,41 @@ paths:
           schema: { type: string }
           description: |
             Which file to return. Required when the secret has more than one
-            (a `certificate` secret: `tls.crt`, `tls.key`, `ca.crt`) — omitting
-            it is a 400 listing what's available, not a guess. A `kv`/`file`
-            secret has exactly one file and needs no `property`.
+            (a `certificate` secret: `tls.crt`, `tls.key`, `ca.crt`) and
+            `all` is not set — omitting it is a 400 listing what's
+            available, not a guess. A `kv`/`file` secret has exactly one
+            file and needs no `property`.
+        - name: all
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: |
+            Return every file the secret has (`files`, a map of file name to
+            base64 content) instead of selecting one via `property` — the
+            single request that syncs a whole multi-file secret in one
+            `ExternalSecret` `data[]` entry (goca's native provider's
+            `GetSecretMap` uses this). Works on a single-file secret too,
+            returning a one-entry map. `property` is ignored when `all=true`.
       responses:
         "200":
-          description: OK
+          description: |
+            OK. The response is one of two shapes depending on `all`: a
+            single value (`property`/`value`/`value_base64`) by default, or
+            a `files` map when `all=true` — see the `all` parameter above.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   name: { type: string }
-                  property: { type: string, description: "the file name that was returned" }
                   version: { type: string }
-                  value: { type: string, description: "present only when the content is valid UTF-8" }
-                  value_base64: { type: string, description: "always present; safe for binary content" }
+                  property: { type: string, description: "the file name that was returned; absent when all=true" }
+                  value: { type: string, description: "present only when the content is valid UTF-8; absent when all=true" }
+                  value_base64: { type: string, description: "safe for binary content; absent when all=true" }
+                  files:
+                    type: object
+                    description: "present only when all=true: file name -> base64 content"
+                    additionalProperties: { type: string }
         "400": { description: "missing key, or property is required/unknown for this secret" }
         "401": { description: "the ServiceAccount token was rejected" }
         "404": { description: "no such secret, or it exists but is not bound to this identity — identical either way" }
