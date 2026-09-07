@@ -63,7 +63,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: external-secrets    # the ESO controller's own ServiceAccount
-    namespace: external-secrets
+    namespace: external-secrets   # check yours: some installs use external-secrets-system
 roleRef:
   kind: Role
   name: mint-eso-reader-token
@@ -72,6 +72,13 @@ roleRef:
 
 ```bash
 kubectl apply -f rbac.yaml
+```
+
+Find the controller's actual namespace and ServiceAccount name for your
+install rather than assuming — it varies by how ESO was deployed:
+
+```bash
+kubectl get deploy -A -o jsonpath='{range .items[?(@.metadata.name=="external-secrets")]}{.metadata.namespace}{"\t"}{.spec.template.spec.serviceAccountName}{"\n"}{end}'
 ```
 
 This `Role`/`RoleBinding` pair *is* the isolation boundary: repeat it per
@@ -128,21 +135,34 @@ spec:
 
 ### Getting the image
 
-This provider isn't in an official ESO release. Build it into your own
-image from the fork:
+This provider isn't in an official ESO release. The `providers/v1/goca`
+package (API types, provider client, registration file) currently lives
+only as an uncommitted patch against a local clone of
+[external-secrets/external-secrets](https://github.com/external-secrets/external-secrets)
+v2.10.0 — it has not been pushed to a public fork yet. To build it:
 
-```bash
-git clone https://github.com/external-secrets/external-secrets.git   # the fork with providers/v1/goca
-cd external-secrets
-docker build --build-arg PROVIDER=all_providers -t your-registry/external-secrets:goca .
-docker push your-registry/external-secrets:goca
-```
+1. Clone upstream and apply the goca provider (ask in-repo for the current
+   patch, or re-derive it from `providers/v1/goca/goca.go` — it's one file
+   of provider logic plus a one-line `pkg/register/goca.go`, both written
+   against ESO's own `esv1.Provider`/`SecretsClient` conventions).
+2. Build both the controller and admission-webhook binaries with the
+   `goca` (or `all_providers`) build tag and the repo's own `Dockerfile`:
 
-then point the Helm chart at it (`image.repository`/`image.tag`). If you'd
-rather not maintain a fork long-term, consider opening a PR upstream — the
-provider is self-contained (`providers/v1/goca/`, one file of API types,
-one registration file) and was written against ESO's own conventions from
-the start.
+   ```bash
+   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+     go build -tags all_providers -o bin/external-secrets-linux-amd64 .
+   docker build --platform linux/amd64 -t your-registry/external-secrets-goca:v2.10.0-goca .
+   docker push your-registry/external-secrets-goca:v2.10.0-goca
+   ```
+3. Point **both** the `external-secrets` (controller) and
+   `external-secrets-webhook` (admission validation) Deployments at the new
+   image — the webhook validates `SecretStore.spec.provider` too, and
+   without the goca provider compiled in it rejects a `goca:` block with
+   `secret stores must only have exactly one backend specified, found 0`.
+
+If you'd rather not maintain a fork long-term, consider opening a PR
+upstream — the provider is self-contained and was written against ESO's
+own conventions from the start.
 
 ## Generic webhook provider
 
