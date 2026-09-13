@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -318,10 +317,11 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 	if guided {
 		base = ask("External base URL (used inside certificates for CRL URLs)", base)
 	}
-	if _, err := url.Parse(base); err != nil {
-		return fmt.Errorf("base URL %q is not a valid URL: %w", base, err)
+	normalizedBase, err := config.NormalizeBaseURL(base)
+	if err != nil {
+		return fmt.Errorf("base URL %q %w", base, err)
 	}
-	cfg.Server.BaseURL = strings.TrimRight(base, "/")
+	cfg.Server.BaseURL = normalizedBase
 	cfg.Security.SecureCookies = strings.HasPrefix(cfg.Server.BaseURL, "https://")
 	cfg.Security.SessionTTL = f.sessionTTL
 	kv("listen", cfg.Addr())

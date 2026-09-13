@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -452,6 +453,18 @@ func (c *Config) Validate() error {
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}
+	// Empty stays allowed - plenty of installs never serve ACME, OIDC or a
+	// public CRL, and the call sites that need it already guard on "". A set
+	// but malformed one is always a mistake, though, and one that otherwise
+	// surfaces far downstream: as an ACME client that cannot make a single
+	// request, or as a CRL URL inside certificates already in the wild.
+	if c.Server.BaseURL != "" {
+		normalized, err := NormalizeBaseURL(c.Server.BaseURL)
+		if err != nil {
+			return fmt.Errorf("server.base_url %q %w", c.Server.BaseURL, err)
+		}
+		c.Server.BaseURL = normalized
+	}
 	for _, p := range c.Server.TrustedProxies {
 		if _, err := parseCIDROrIP(p); err != nil {
 			return fmt.Errorf("server.trusted_proxies entry %q is not a valid CIDR or IP: %w", p, err)
@@ -494,6 +507,52 @@ func (c *Config) Validate() error {
 // parseCIDROrIP parses a CIDR ("10.0.0.0/8") or a bare IP ("192.168.1.10",
 // treated as /32 or /128) into an IPNet. Used to validate
 // server.trusted_proxies entries.
+// NormalizeBaseURL validates server.base_url and returns it without trailing
+// slashes. It is deliberately stricter than url.Parse, which accepts a bare
+// "ca.example.com" (scheme "", host "", path "ca.example.com") and even reads
+// "ca.example.com:8080" as scheme "ca.example.com" - both parse without error
+// and neither is usable as a base URL.
+//
+// That laxness is not cosmetic. base_url is concatenated into values that
+// leave this process and cannot be fixed after the fact:
+//
+//   - the RFC 8555 ACME directory, whose newNonce/newAccount/newOrder URLs
+//     must be absolute - a scheme-less one makes every ACME client (including
+//     cert-manager) fail with `unsupported protocol scheme ""` on the first
+//     request, before an account is ever created;
+//   - CRL distribution points baked into every certificate goca issues;
+//   - the OIDC redirect URL derived in Validate below;
+//   - security.secure_cookies, which `goca setup` sets by testing for an
+//     "https://" prefix - a scheme-less base_url silently turns it off.
+func NormalizeBaseURL(s string) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(s), "/")
+	if trimmed == "" {
+		return "", errors.New("must not be empty")
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("is not a valid URL: %w", err)
+	}
+	switch {
+	case u.Scheme == "http", u.Scheme == "https":
+	// A bare "ca.example.com:8080" parses as scheme "ca.example.com" with
+	// opaque "8080", so reporting the scheme back would tell an operator
+	// their hostname is an unsupported scheme. Opaque is the tell: a real
+	// http(s) URL never has one.
+	case u.Scheme == "" || u.Opaque != "":
+		return "", errors.New(`is missing a scheme; write it in full, e.g. "https://` + trimmed + `"`)
+	default:
+		return "", fmt.Errorf("has scheme %q; only http and https are supported", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", errors.New("is missing a host")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("must not carry a query string or fragment")
+	}
+	return trimmed, nil
+}
+
 func parseCIDROrIP(s string) (*net.IPNet, error) {
 	if _, ipnet, err := net.ParseCIDR(s); err == nil {
 		return ipnet, nil
