@@ -111,6 +111,42 @@ the cluster can't reach `CA_BASE_URL` (check with a throwaway pod:
 or the `keyID`/Secret don't match what goca has on file
 (`goca acme eab show k8s-demo`).
 
+### If registration fails with "certificate signed by unknown authority"
+
+```text
+Failed to register ACME account: Get "https://ca.example.com/acme/directory":
+tls: failed to verify certificate: x509: certificate signed by unknown authority
+```
+
+Expect this one. cert-manager is validating goca's *own* TLS certificate
+against the trust store baked into its container image, and goca's serving
+certificate is — almost by definition — issued by a private CA that isn't in
+it. Nothing is misconfigured on goca's side; cert-manager simply has no
+reason to trust it yet.
+
+Hand it the issuing CA in the ClusterIssuer itself, as a base64-encoded PEM
+under `spec.acme.caBundle`:
+
+```bash
+# The CA that signed goca's TLS certificate - not necessarily a CA goca
+# itself issues from. If a proxy terminates TLS in front of goca, it's
+# whatever signed the proxy's certificate.
+kubectl create ... # or just build the value:
+base64 -w0 internal-ca.crt   # macOS: base64 -i internal-ca.crt | tr -d '\n'
+```
+
+```yaml
+spec:
+  acme:
+    server: https://ca.example.com/acme/directory
+    caBundle: <the base64 PEM from above>
+```
+
+Prefer this to `spec.acme.skipTLSVerify: true`. Both clear the error, but
+`skipTLSVerify` drops authentication of the ACME server for every request
+cert-manager makes to it — on the one channel that carries your EAB
+credential.
+
 ## 5. Request a certificate
 
 Edit [`certificate.yaml`](https://github.com/mevijays/goca/blob/main/k8s-demo/certificate.yaml) if you want a different DNS
