@@ -185,12 +185,31 @@ func (s *Store) DeleteEABCred(ctx context.Context, id int64) error {
 	return nil
 }
 
-// TouchEABCredUse increments the account counter and last-used timestamp,
-// called once a new account is successfully bootstrapped with it.
-func (s *Store) TouchEABCredUse(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE acme_eab_creds SET account_count = account_count + 1, last_used_at = ? WHERE id = ?`,
+// ReserveEABAccountSlot atomically counts one more account against a
+// credential, refusing (false) when its max_accounts cap is already reached.
+//
+// The check and the increment are a single conditional UPDATE. Checking
+// EABCred.Usable() and then incrementing separately - as registration used
+// to - lets concurrent registrations all pass the check before any of them
+// increments, overshooting the cap; "--max-accounts 1" is the documented way
+// to make a credential one-shot, so that overshoot is the whole point lost.
+func (s *Store) ReserveEABAccountSlot(ctx context.Context, id int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE acme_eab_creds SET account_count = account_count + 1, last_used_at = ?
+		 WHERE id = ? AND (max_accounts = 0 OR account_count < max_accounts)`,
 		time.Now().UTC(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ReleaseEABAccountSlot gives back a slot reserved by ReserveEABAccountSlot
+// when the account it was reserved for could not be created after all.
+func (s *Store) ReleaseEABAccountSlot(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE acme_eab_creds SET account_count = account_count - 1 WHERE id = ? AND account_count > 0`, id)
 	return err
 }
 
@@ -362,19 +381,28 @@ type AcmeOrder struct {
 	Error         string           `json:"error,omitempty"`
 	ExpiresAt     time.Time        `json:"expires_at"`
 	CreatedAt     time.Time        `json:"created_at"`
+	// NotAfter is the certificate expiry the client asked for in new-order
+	// (RFC 8555 §7.4), if any - already checked against the credential's
+	// maximum validity when the order was accepted.
+	NotAfter *time.Time `json:"not_after,omitempty"`
 }
 
 const acmeOrderCols = `id, account_id, status, identifiers_json, certificate_id,
- error_json, expires_at, created_at`
+ error_json, expires_at, created_at, not_after`
 
 func scanAcmeOrder(sc interface{ Scan(...any) error }) (*AcmeOrder, error) {
 	var o AcmeOrder
 	var identifiersJSON string
 	var certID sql.NullInt64
+	var notAfter sql.NullTime
 	err := sc.Scan(&o.ID, &o.AccountID, &o.Status, &identifiersJSON, &certID,
-		&o.Error, &o.ExpiresAt, &o.CreatedAt)
+		&o.Error, &o.ExpiresAt, &o.CreatedAt, &notAfter)
 	if err != nil {
 		return nil, err
+	}
+	if notAfter.Valid {
+		v := notAfter.Time
+		o.NotAfter = &v
 	}
 	o.Identifiers = decodeIdentifiers(identifiersJSON)
 	if certID.Valid {
@@ -387,11 +415,15 @@ func scanAcmeOrder(sc interface{ Scan(...any) error }) (*AcmeOrder, error) {
 // CreateAcmeOrder stores a new order.
 func (s *Store) CreateAcmeOrder(ctx context.Context, o *AcmeOrder) (*AcmeOrder, error) {
 	var id int64
+	var notAfter any
+	if o.NotAfter != nil {
+		notAfter = o.NotAfter.UTC()
+	}
 	err := s.db.QueryRowContext(ctx, `INSERT INTO acme_orders
-	 (account_id, status, identifiers_json, expires_at, created_at)
-	 VALUES (?,?,?,?,?) RETURNING id`,
+	 (account_id, status, identifiers_json, expires_at, created_at, not_after)
+	 VALUES (?,?,?,?,?,?) RETURNING id`,
 		o.AccountID, nz(o.Status, AcmeStatusPending), encodeIdentifiers(o.Identifiers),
-		o.ExpiresAt.UTC(), o.CreatedAt.UTC()).Scan(&id)
+		o.ExpiresAt.UTC(), o.CreatedAt.UTC(), notAfter).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -457,10 +489,27 @@ func (s *Store) SetAcmeOrderStatus(ctx context.Context, id int64, status string)
 // SetAcmeOrderError marks an order invalid with an RFC 7807-shaped problem
 // document (already JSON-encoded by the caller).
 func (s *Store) SetAcmeOrderError(ctx context.Context, id int64, problemJSON string) error {
+	// Never demote an order that already produced its certificate: a
+	// concurrent, failing request for the same order must not mark a
+	// completed one invalid.
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE acme_orders SET status = ?, error_json = ? WHERE id = ?`,
-		AcmeStatusInvalid, problemJSON, id)
+		`UPDATE acme_orders SET status = ?, error_json = ? WHERE id = ? AND status <> ?`,
+		AcmeStatusInvalid, problemJSON, id, AcmeStatusValid)
 	return err
+}
+
+// ClaimAcmeOrderForFinalize atomically moves an order from "ready" to
+// "processing", returning false if it was not ready - so of two concurrent
+// finalize requests for one order, exactly one issues a certificate.
+func (s *Store) ClaimAcmeOrderForFinalize(ctx context.Context, id int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE acme_orders SET status = ? WHERE id = ? AND status = ?`,
+		AcmeStatusProcessing, id, AcmeStatusReady)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // SetAcmeOrderCertificate links an order to the certificate finalize produced

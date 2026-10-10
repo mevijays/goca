@@ -41,24 +41,37 @@ func acmeServer(t *testing.T, h *harness) *httptest.Server {
 	return srv
 }
 
-// registerACME registers a fresh account (new key) under eab on srv.
-func registerACME(t *testing.T, srv *httptest.Server, eab *acme.CreateEABResult) *xacme.Client {
+// mustHMAC decodes a freshly created credential's HMAC key.
+func mustHMAC(t *testing.T, eab *acme.CreateEABResult) []byte {
 	t.Helper()
-	hmacKey, err := base64.RawURLEncoding.DecodeString(eab.HMACKeyB64)
+	k, err := base64.RawURLEncoding.DecodeString(eab.HMACKeyB64)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return k
+}
+
+// newUnregisteredClient returns a client with a fresh account key, pointed at
+// srv and with the directory already discovered.
+func newUnregisteredClient(t *testing.T, srv *httptest.Server) *xacme.Client {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &xacme.Client{Key: key, DirectoryURL: srv.URL + "/acme/directory", HTTPClient: srv.Client()}
-	ctx := context.Background()
-	if _, err := client.Discover(ctx); err != nil {
+	c := &xacme.Client{Key: key, DirectoryURL: srv.URL + "/acme/directory", HTTPClient: srv.Client()}
+	if _, err := c.Discover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Register(ctx, &xacme.Account{
-		ExternalAccountBinding: &xacme.ExternalAccountBinding{KID: eab.Cred.KeyID, Key: hmacKey},
+	return c
+}
+
+// registerACME registers a fresh account (new key) under eab on srv.
+func registerACME(t *testing.T, srv *httptest.Server, eab *acme.CreateEABResult) *xacme.Client {
+	t.Helper()
+	client := newUnregisteredClient(t, srv)
+	if _, err := client.Register(context.Background(), &xacme.Account{
+		ExternalAccountBinding: &xacme.ExternalAccountBinding{KID: eab.Cred.KeyID, Key: mustHMAC(t, eab)},
 	}, xacme.AcceptTOS); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

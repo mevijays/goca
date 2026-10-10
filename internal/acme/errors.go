@@ -44,5 +44,11 @@ func AlreadyRevoked(detail string) *Problem { return problem("alreadyRevoked", 4
 func ExternalAccountRequired(detail string) *Problem {
 	return problem("externalAccountRequired", 400, "%s", detail)
 }
+func InvalidContact(f string, a ...any) *Problem {
+	return problem("invalidContact", 400, f, a...)
+}
+func UnsupportedContact(f string, a ...any) *Problem {
+	return problem("unsupportedContact", 400, f, a...)
+}
 func ServerInternal(f string, a ...any) *Problem { return problem("serverInternal", 500, f, a...) }
 func NotFound(detail string) *Problem            { return problem("malformed", 404, "%s", detail) }

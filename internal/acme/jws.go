@@ -138,6 +138,10 @@ func VerifyEAB(eabJSON []byte, outerURL string, accountJWK *jose.JSONWebKey,
 	if hdr.JSONWebKey != nil {
 		return keyID, errors.New("externalAccountBinding must not carry a jwk header")
 	}
+	if hdr.Nonce != "" {
+		// RFC 8555 §7.3.4: the inner JWS's "nonce" field MUST NOT be present.
+		return keyID, errors.New("externalAccountBinding must not carry a nonce")
+	}
 	if urlVal, _ := hdr.ExtraHeaders["url"].(string); urlVal != outerURL {
 		return keyID, errors.New("externalAccountBinding url does not match the request url")
 	}

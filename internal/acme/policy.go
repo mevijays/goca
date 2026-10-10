@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 
 	"github.com/mevijays/goca/internal/store"
@@ -101,4 +102,26 @@ func nonDNSSummary(csr *x509.CertificateRequest) string {
 		parts = append(parts, "URI:"+u.String())
 	}
 	return strings.Join(parts, ", ")
+}
+
+// validContacts checks account contact URLs per RFC 8555 §7.3: only mailto:
+// is supported, and a mailto: URL must name exactly one address and carry no
+// header fields ("?subject=..."). They used to be stored as sent - including
+// arbitrary schemes - and shown in the portal and CLI.
+func validContacts(contacts []string) *Problem {
+	for _, c := range contacts {
+		u, err := url.Parse(c)
+		if err != nil || u.Scheme == "" {
+			return InvalidContact("contact %q is not a URL", c)
+		}
+		if !strings.EqualFold(u.Scheme, "mailto") {
+			return UnsupportedContact("contact %q: only mailto: contacts are supported", c)
+		}
+		addr := u.Opaque
+		if u.RawQuery != "" || strings.Contains(addr, ",") || strings.Count(addr, "@") != 1 ||
+			strings.HasPrefix(addr, "@") || strings.HasSuffix(addr, "@") {
+			return InvalidContact("contact %q must be a single mailto: address with no header fields", c)
+		}
+	}
+	return nil
 }

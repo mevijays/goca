@@ -276,7 +276,7 @@ metadata:
   namespace: default
 spec:
   secretName: app-tls
-  duration: 2160h    # 90 days - cert-manager renews automatically before this
+  duration: 2160h    # 90 days - needs enableDurationFeature on the ClusterIssuer (below)
   issuerRef:
     name: goca
     kind: ClusterIssuer
@@ -284,6 +284,14 @@ spec:
     - app.svc.cluster-a.internal
     - app.internal.lab
 ```
+
+cert-manager only passes `duration` on to the ACME server when the
+ClusterIssuer sets `spec.acme.enableDurationFeature: true`; without it,
+certificates get the EAB credential's `--days` (or the authority default,
+397 days) and `duration` only affects when cert-manager renews. With it set,
+goca honours the requested lifetime up to the credential's maximum, and
+refuses an order asking for longer rather than silently shortening it.
+
 
 Or via an Ingress annotation:
 
@@ -565,9 +573,13 @@ credential/account summary without touching Kubernetes at all.
   ([RFC 8738](https://www.rfc-editor.org/rfc/rfc8738)) are rejected with
   `unsupportedIdentifier`. Request certificates for IPs the normal way
   instead (`goca cert issue --san 10.0.0.5`).
-- **`notBefore`/`notAfter` in an order are accepted and ignored.** Validity is
-  controlled entirely by the EAB credential's `--days` (or the CA/global
-  default) — there's no per-order pinned window.
+- **`notAfter` is honoured up to the credential's maximum; `notBefore` is
+  refused.** An order's `notAfter` (what cert-manager sends for `duration`
+  with `enableDurationFeature`) sets the certificate's lifetime, rounded up to
+  whole days, as long as it is within the EAB credential's `--days` (or the
+  CA/global default). An order asking for longer, or carrying `notBefore`, is
+  rejected as `malformed` — RFC 8555 §7.4 has the server refuse what it
+  cannot fulfil rather than quietly change it.
 - **Nonces are in-memory**, not persisted to the database. A goca restart
   mid-flow invalidates outstanding nonces; every compliant ACME client
   (including cert-manager's) already retries transparently on `badNonce`, so

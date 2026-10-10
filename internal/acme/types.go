@@ -51,6 +51,7 @@ type OrderObject struct {
 	Authorizations []string     `json:"authorizations"`
 	Finalize       string       `json:"finalize"`
 	Certificate    string       `json:"certificate,omitempty"`
+	NotAfter       string       `json:"notAfter,omitempty"`
 }
 
 // AuthorizationObject is the authorization resource (§7.1.4). goca creates
@@ -94,9 +95,9 @@ type UpdateAccountRequest struct {
 	Status  string   `json:"status,omitempty"`
 }
 
-// NewOrderRequest is the payload of POST /new-order (§7.4). NotBefore/NotAfter
-// are accepted and ignored: goca does not support client-pinned validity
-// windows, only per-EAB-credential defaults.
+// NewOrderRequest is the payload of POST /new-order (§7.4). NotAfter is
+// honoured up to the credential's maximum validity; NotBefore is refused -
+// see Service.requestedNotAfter.
 type NewOrderRequest struct {
 	Identifiers []Identifier `json:"identifiers"`
 	NotBefore   string       `json:"notBefore,omitempty"`

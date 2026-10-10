@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -167,6 +168,12 @@ func (s *Service) NewAccount(ctx context.Context, body []byte) (*store.AcmeAccou
 	// Idempotent per §7.3.1: a repeat registration with the same key returns
 	// the existing account instead of erroring or creating a duplicate.
 	if existing, err := s.st.GetAcmeAccountByThumbprint(ctx, thumb); err == nil {
+		// RFC 8555 §7.3.6: once deactivated, requests signed by that key are
+		// refused - including a re-registration, which used to hand the
+		// deactivated account straight back with a 200.
+		if existing.Status != store.AcmeStatusValid {
+			return nil, nil, false, Unauthorized("the account for this key is %s", existing.Status)
+		}
 		_ = s.st.TouchAcmeAccountUsed(ctx, existing.ID)
 		return existing, s.accountObject(existing), false, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -174,6 +181,9 @@ func (s *Service) NewAccount(ctx context.Context, body []byte) (*store.AcmeAccou
 	}
 	if req.OnlyReturnExisting {
 		return nil, nil, false, AccountDoesNotExist("no account is registered for this key")
+	}
+	if p := validContacts(req.Contact); p != nil {
+		return nil, nil, false, p
 	}
 
 	var cred *store.EABCred
@@ -199,8 +209,22 @@ func (s *Service) NewAccount(ctx context.Context, body []byte) (*store.AcmeAccou
 		return nil, nil, false, ExternalAccountRequired(reason)
 	}
 
+	// Usable() above is a fast, readable refusal; this is the authoritative,
+	// atomic one. Concurrent registrations could otherwise all pass Usable()
+	// before any of them was counted, overshooting max_accounts.
+	reserved, err := s.st.ReserveEABAccountSlot(ctx, cred.ID)
+	if err != nil {
+		return nil, nil, false, ServerInternal("%v", err)
+	}
+	if !reserved {
+		reason := "the external account binding key has reached its account limit"
+		s.audit(ctx, "acme", "acme.account.rejected", keyID, reason)
+		return nil, nil, false, ExternalAccountRequired(reason)
+	}
+
 	jwkJSON, err := json.Marshal(jws.JWK.Public())
 	if err != nil {
+		_ = s.st.ReleaseEABAccountSlot(ctx, cred.ID)
 		return nil, nil, false, ServerInternal("%v", err)
 	}
 	account, err := s.st.CreateAcmeAccount(ctx, &store.AcmeAccount{
@@ -212,9 +236,9 @@ func (s *Service) NewAccount(ctx context.Context, body []byte) (*store.AcmeAccou
 		CreatedAt:     time.Now().UTC(),
 	})
 	if err != nil {
+		_ = s.st.ReleaseEABAccountSlot(ctx, cred.ID)
 		return nil, nil, false, ServerInternal("%v", err)
 	}
-	_ = s.st.TouchEABCredUse(ctx, cred.ID)
 	s.audit(ctx, "acme:"+cred.Name, "acme.account.create", fmt.Sprint(account.ID),
 		fmt.Sprintf("eab=%s contact=%v", cred.Name, req.Contact))
 	metrics.AccountTotal.WithLabelValues(account.Status).Inc()
@@ -230,6 +254,15 @@ type authedRequest struct {
 
 // ResolveAccount loads the account a "kid" header refers to and checks it is
 // still usable.
+//
+// The kid is matched on its path suffix (/acme/account/<id>), not compared
+// with accountURL() exactly. That is deliberate, not an oversight: a client
+// keeps the kid it was handed at registration, so an exact match would
+// strand every existing account the moment server.base_url changes (a
+// scheme or hostname fix, a new proxy). It costs nothing in security - the
+// request must still verify against that account's stored key, below in
+// authenticate - and the url header, which is not stored client-side, is
+// still checked exactly against the current base URL.
 func (s *Service) ResolveAccount(ctx context.Context, kid string) (*store.AcmeAccount, *Problem) {
 	m := accountURLRe.FindStringSubmatch(kid)
 	if m == nil {
@@ -297,6 +330,14 @@ func (s *Service) GetAccount(ctx context.Context, accountID int64, body []byte) 
 	if err := ar.jws.DecodePayload(&req); err != nil {
 		return nil, Malformed("%v", err)
 	}
+	// Validate the whole request before changing anything: a bad status used
+	// to be rejected only after the contact had already been updated.
+	if req.Status != "" && req.Status != store.AcmeStatusDeactivated {
+		return nil, Malformed("status can only be set to %q", store.AcmeStatusDeactivated)
+	}
+	if p := validContacts(req.Contact); p != nil {
+		return nil, p
+	}
 	if req.Contact != nil {
 		if err := s.st.SetAcmeAccountContact(ctx, ar.account.ID, req.Contact); err != nil {
 			return nil, ServerInternal("%v", err)
@@ -310,8 +351,6 @@ func (s *Service) GetAccount(ctx context.Context, accountID int64, body []byte) 
 		ar.account.Status = store.AcmeStatusDeactivated
 		s.audit(ctx, fmt.Sprintf("acme:account:%d", ar.account.ID), "acme.account.deactivate",
 			fmt.Sprint(ar.account.ID), "")
-	} else if req.Status != "" {
-		return nil, Malformed("status can only be set to %q", store.AcmeStatusDeactivated)
 	}
 	return s.accountObject(ar.account), nil
 }
@@ -367,6 +406,10 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 	}
 
 	now := time.Now().UTC()
+	notAfter, perr := s.requestedNotAfter(req, cred, now)
+	if perr != nil {
+		return nil, nil, perr
+	}
 	// Every identifier is authorized immediately, so the order needs no
 	// intermediate "pending" period - it starts "ready" per the §7.1.6 state
 	// diagram's allowance for orders whose authorizations are already valid.
@@ -376,6 +419,7 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 		Identifiers: idents,
 		ExpiresAt:   now.Add(orderTTL),
 		CreatedAt:   now,
+		NotAfter:    notAfter,
 	})
 	if err != nil {
 		return nil, nil, ServerInternal("%v", err)
@@ -422,6 +466,40 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 	return order, obj, nil
 }
 
+// requestedNotAfter validates the certificate lifetime a new-order asks for
+// (RFC 8555 §7.4). It used to be accepted and silently ignored, so a client
+// asking for 90-day certificates got the authority default (397 days) with
+// no sign anything was off. Now a notAfter within the credential's maximum
+// validity is honoured, and one beyond it - or a notBefore, which goca
+// cannot honour - is refused, since §7.4 has the server reject an order it
+// cannot fulfil as requested rather than quietly change it.
+func (s *Service) requestedNotAfter(req NewOrderRequest, cred *store.EABCred, now time.Time) (*time.Time, *Problem) {
+	if strings.TrimSpace(req.NotBefore) != "" {
+		return nil, Malformed("notBefore is not supported; certificates are valid from issuance")
+	}
+	if strings.TrimSpace(req.NotAfter) == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, req.NotAfter)
+	if err != nil {
+		return nil, Malformed("notAfter %q is not an RFC 3339 timestamp", req.NotAfter)
+	}
+	if !t.After(now) {
+		return nil, Malformed("notAfter %s is not in the future", req.NotAfter)
+	}
+	maxDays := cred.Days
+	if maxDays <= 0 {
+		maxDays = s.caSvc.Config().CA.DefaultCertDays
+	}
+	// A minute of slack for clock skew between the client and goca.
+	if t.After(now.AddDate(0, 0, maxDays).Add(time.Minute)) {
+		return nil, Malformed("notAfter %s is beyond this credential's maximum validity of %d days",
+			req.NotAfter, maxDays)
+	}
+	t = t.UTC()
+	return &t, nil
+}
+
 // OrderObjectFor builds the wire representation of a stored order.
 func (s *Service) OrderObjectFor(ctx context.Context, o *store.AcmeOrder) (*OrderObject, error) {
 	authzs, err := s.st.ListAcmeAuthorizationsByOrder(ctx, o.ID)
@@ -445,6 +523,9 @@ func (s *Service) OrderObjectFor(ctx context.Context, o *store.AcmeOrder) (*Orde
 	}
 	if o.CertificateID != nil {
 		obj.Certificate = s.certURL(*o.CertificateID)
+	}
+	if o.NotAfter != nil {
+		obj.NotAfter = o.NotAfter.UTC().Format(time.RFC3339)
 	}
 	if o.Error != "" {
 		var p Problem
@@ -496,6 +577,14 @@ func (s *Service) Finalize(ctx context.Context, orderID int64, body []byte) (*Or
 	}
 	if order.Status != store.AcmeStatusReady {
 		return nil, OrderNotReady(fmt.Sprintf("order is %q, not ready", order.Status))
+	}
+	// An order's "expires" used to be informational only; an order could be
+	// finalized indefinitely after it. Expired means invalid (§7.1.6).
+	if time.Now().After(order.ExpiresAt) {
+		p := OrderNotReady(fmt.Sprintf("order expired at %s; place a new one",
+			order.ExpiresAt.UTC().Format(time.RFC3339)))
+		_ = s.st.SetAcmeOrderError(ctx, order.ID, mustJSON(p))
+		return nil, p
 	}
 
 	var req FinalizeRequest
@@ -560,11 +649,33 @@ func (s *Service) Finalize(ctx context.Context, orderID int64, body []byte) (*Or
 		return nil, perr
 	}
 
+	// Claim the order only now, after every check that can reject the
+	// request, so a rejected finalize leaves it "ready" (or invalid, via
+	// SetAcmeOrderError) rather than stuck in "processing". Of two concurrent
+	// finalizes for one order, exactly one gets past this; the order status
+	// was previously only read, so both could issue a certificate.
+	claimed, err := s.st.ClaimAcmeOrderForFinalize(ctx, order.ID)
+	if err != nil {
+		return nil, ServerInternal("%v", err)
+	}
+	if !claimed {
+		return nil, OrderNotReady("this order is already being finalized, or has been")
+	}
+
+	days := cred.Days
+	if order.NotAfter != nil {
+		// Validated against the credential's maximum at new-order. goca
+		// issues in whole days, so round up rather than undershoot.
+		days = int(math.Ceil(time.Until(*order.NotAfter).Hours() / 24))
+		if days < 1 {
+			days = 1
+		}
+	}
 	issueIn := ca.IssueInput{
 		Mode:    ca.ModeCSR,
 		CSRPEM:  string(csrPEM),
 		Profile: cred.Profile,
-		Days:    cred.Days,
+		Days:    days,
 		Actor:   "acme:" + cred.Name,
 	}
 	if cred.CAID != nil {

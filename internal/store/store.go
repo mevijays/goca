@@ -660,14 +660,18 @@ func Open(path string) (*Store, error) {
 
 // addedColumns are columns introduced after the first release. CREATE TABLE IF
 // NOT EXISTS leaves an older table untouched, so each one is added on open when
-// it is missing. Every entry must be nullable or carry a DEFAULT.
-var addedColumns = []struct{ table, column, ddl string }{
-	{"cas", "csr_pem", "TEXT NOT NULL DEFAULT ''"},
-	{"cas", "external", "INTEGER NOT NULL DEFAULT 0"},
-	{"cas", "subject_key_id", "TEXT NOT NULL DEFAULT ''"},
-	{"cas", "authority_key_id", "TEXT NOT NULL DEFAULT ''"},
-	{"certificates", "renewed_from", "INTEGER"},
-	{"secret_bindings", "k8s_auth_method", "TEXT NOT NULL DEFAULT '*'"},
+// it is missing. Every entry must be nullable or carry a DEFAULT. pgDDL, when
+// set, replaces ddl on PostgreSQL - needed for timestamps, which are
+// TIMESTAMPTZ there (like every other timestamp in the PostgreSQL schema)
+// but plain TIMESTAMP in SQLite.
+var addedColumns = []struct{ table, column, ddl, pgDDL string }{
+	{"cas", "csr_pem", "TEXT NOT NULL DEFAULT ''", ""},
+	{"cas", "external", "INTEGER NOT NULL DEFAULT 0", ""},
+	{"cas", "subject_key_id", "TEXT NOT NULL DEFAULT ''", ""},
+	{"cas", "authority_key_id", "TEXT NOT NULL DEFAULT ''", ""},
+	{"certificates", "renewed_from", "INTEGER", ""},
+	{"secret_bindings", "k8s_auth_method", "TEXT NOT NULL DEFAULT '*'", ""},
+	{"acme_orders", "not_after", "TIMESTAMP", "TIMESTAMPTZ"},
 }
 
 // migrate brings an existing database up to the current schema.
@@ -802,7 +806,11 @@ func firstLine(s string) string {
 // separate existence check.
 func migratePostgres(db *sql.DB) error {
 	for _, c := range addedColumns {
-		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s", c.table, c.column, c.ddl)
+		ddl := c.ddl
+		if c.pgDDL != "" {
+			ddl = c.pgDDL
+		}
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s", c.table, c.column, ddl)
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("add %s.%s: %w", c.table, c.column, err)
 		}
