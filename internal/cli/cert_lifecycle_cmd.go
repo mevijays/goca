@@ -64,6 +64,9 @@ Pass --expiring-in N --all to rotate everything due within N days.`),
 				RevokeOld: revokeOld,
 				Note:      note,
 				Actor:     a.actor(),
+
+				// Local CLI: see runIssue.
+				AllowSubordinateCA: true,
 			}
 
 			// Batch mode.

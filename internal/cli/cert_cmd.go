@@ -286,6 +286,10 @@ func certWizard(ctx context.Context, a *app, f *issueFlags) error {
 }
 
 func runIssue(ctx context.Context, a *app, in ca.IssueInput, f *issueFlags) error {
+	// The local CLI opens the database and master key directly, so whoever
+	// runs it already holds every CA key: the administrator-only gate on
+	// subordinate CAs exists for the network-facing paths, not this one.
+	in.AllowSubordinateCA = true
 	res, err := a.svc.Issue(ctx, in)
 	if err != nil {
 		return err

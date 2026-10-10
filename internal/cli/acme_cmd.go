@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -250,11 +251,15 @@ func newACMEEABDisableCmd() *cobra.Command {
 		Use:   "disable <id|key-id>",
 		Short: "Disable (or with --enable, re-enable) an EAB credential",
 		Long: strings.TrimSpace(`
-Disabling a credential stops it bootstrapping new ACME accounts. Accounts it
-already created keep working - from registration onward they authenticate
-with their own key, not the EAB secret - so this does not interrupt an
-existing cert-manager ClusterIssuer's renewals. Delete the credential (once
-unused) to remove it entirely.`),
+Disabling a credential stops it bootstrapping new ACME accounts AND stops
+every account it already created from ordering or downloading certificates
+until it is re-enabled. This is the lever for a leaked HMAC key: the accounts
+authenticate with their own keys, so stopping new registrations alone would
+leave whoever used the leaked key issuing indefinitely.
+
+That includes legitimate ones - disabling the credential a cert-manager
+ClusterIssuer was registered with stops its renewals. To cut off a single
+account instead, use: goca acme accounts deactivate <id>.`),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := open()
@@ -327,7 +332,49 @@ func newACMEAccountsCmd() *cobra.Command {
 		Use:   "accounts",
 		Short: "Inspect registered ACME accounts",
 	}
-	cmd.AddCommand(newACMEAccountsListCmd(), newACMEAccountsShowCmd())
+	cmd.AddCommand(newACMEAccountsListCmd(), newACMEAccountsShowCmd(), newACMEAccountsDeactivateCmd())
+	return cmd
+}
+
+func newACMEAccountsDeactivateCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "deactivate <id>",
+		Short: "Permanently deactivate one ACME account (e.g. its key was compromised)",
+		Long: strings.TrimSpace(`
+Deactivate one ACME account. It immediately loses the ability to order,
+download or revoke certificates, and per RFC 8555 this is final: the client
+has to register again, which needs a usable EAB credential.
+
+To cut off every account bootstrapped from a leaked EAB credential at once,
+disable the credential instead: goca acme eab disable <id|key-id>.`),
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("%q is not an account id (see `goca acme accounts list`)", args[0])
+			}
+			if !yes {
+				if !interactive() {
+					return fmt.Errorf("refusing to deactivate account %d non-interactively; pass --yes", id)
+				}
+				if !askYesNo(fmt.Sprintf("Permanently deactivate ACME account %d?", id), false) {
+					return nil
+				}
+			}
+			a, err := open()
+			if err != nil {
+				return err
+			}
+			defer a.Close()
+			if err := acme.New(a.svc).DeactivateAccount(cmd.Context(), id, a.actor()); err != nil {
+				return err
+			}
+			ok("ACME account %d deactivated", id)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "do not ask for confirmation")
 	return cmd
 }
 

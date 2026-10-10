@@ -213,6 +213,8 @@ func (s *Server) handleCertRenew(w http.ResponseWriter, r *http.Request) {
 		SameKey:   r.FormValue("same_key") == "1",
 		RevokeOld: r.FormValue("revoke_old") == "1",
 		Actor:     currentUser(r).Username,
+
+		AllowSubordinateCA: currentUser(r).IsAdmin(),
 	}
 	res, err := s.svc.Renew(r.Context(), c.ID, in)
 	if err != nil {
@@ -344,7 +346,7 @@ func (s *Server) handleCertBulkAction(w http.ResponseWriter, r *http.Request) {
 		n := 0
 		var errs []string
 		for _, id := range idList {
-			if _, err := s.svc.Renew(r.Context(), id, ca.RenewInput{Actor: user.Username}); err != nil {
+			if _, err := s.svc.Renew(r.Context(), id, ca.RenewInput{Actor: user.Username, AllowSubordinateCA: user.IsAdmin()}); err != nil {
 				errs = append(errs, err.Error())
 				continue
 			}

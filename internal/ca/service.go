@@ -298,7 +298,24 @@ type IssueInput struct {
 
 	Note  string `json:"note"`
 	Actor string `json:"-"`
+
+	// AllowSubordinateCA permits the intermediate-ca profile, which yields a
+	// certificate that can itself sign certificates for any name, chaining to
+	// this authority. Only trusted, admin-gated callers may set it. It is
+	// deliberately json:"-": IssueInput is decoded straight from request
+	// bodies, and a field a client could set would make this check
+	// meaningless. New sub-CAs are normally created with CreateCA (`goca ca
+	// create --parent`); this exists for signing an external intermediate's
+	// CSR, an administrator-only operation.
+	AllowSubordinateCA bool `json:"-"`
 }
+
+// ErrSubordinateCANotAllowed is returned by Issue when the intermediate-ca
+// profile is requested by a caller that is not permitted to mint
+// subordinate authorities.
+var ErrSubordinateCANotAllowed = errors.New(
+	`the "intermediate-ca" profile issues a certificate authority and is limited to administrators; ` +
+		`create subordinate authorities with "ca create --parent" instead`)
 
 // IssueResult carries the stored certificate plus any freshly generated key.
 // PrivateKeyPEM is populated only for this response; retrieve it later through
@@ -334,6 +351,9 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (*IssueResult, error
 	profile, err := pki.ParseProfile(in.Profile)
 	if err != nil {
 		return nil, err
+	}
+	if profile == pki.ProfileIntermCA && !in.AllowSubordinateCA {
+		return nil, ErrSubordinateCANotAllowed
 	}
 	days := in.Days
 	if days <= 0 {

@@ -38,6 +38,10 @@ type RenewInput struct {
 	StoreKey *bool  `json:"store_key"`
 	Note     string `json:"note"`
 	Actor    string `json:"-"`
+	// AllowSubordinateCA is passed through to IssueInput: renewing an
+	// intermediate-ca certificate mints a new CA, so it is held to the same
+	// administrator-only rule as issuing one. json:"-" for the same reason.
+	AllowSubordinateCA bool `json:"-"`
 }
 
 // RenewResult carries the replacement certificate.
@@ -96,6 +100,8 @@ func (s *Service) Renew(ctx context.Context, id int64, in RenewInput) (*RenewRes
 		StoreKey: &storeKey,
 		Note:     firstNonEmpty(in.Note, old.Note),
 		Actor:    in.Actor,
+
+		AllowSubordinateCA: in.AllowSubordinateCA,
 	}
 
 	if in.SameKey {

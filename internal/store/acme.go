@@ -155,10 +155,9 @@ func (s *Store) ListEABCreds(ctx context.Context) ([]*EABCred, error) {
 	return out, rows.Err()
 }
 
-// SetEABCredDisabled enables or disables a credential. Disabling it stops new
-// accounts from being bootstrapped; accounts it already created keep working,
-// since after registration they authenticate with their own key, not the EAB
-// secret.
+// SetEABCredDisabled enables or disables a credential. What disabling means
+// for accounts it already created is enforced by the ACME service (it blocks
+// their orders), not here.
 func (s *Store) SetEABCredDisabled(ctx context.Context, id int64, disabled bool) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE acme_eab_creds SET disabled = ? WHERE id = ?`, disabled, id)
 	if err != nil {
@@ -402,6 +401,21 @@ func (s *Store) CreateAcmeOrder(ctx context.Context, o *AcmeOrder) (*AcmeOrder, 
 // GetAcmeOrder fetches one order by id.
 func (s *Store) GetAcmeOrder(ctx context.Context, id int64) (*AcmeOrder, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+acmeOrderCols+` FROM acme_orders WHERE id = ?`, id)
+	o, err := scanAcmeOrder(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return o, err
+}
+
+// GetAcmeOrderByCertificate returns the ACME order that produced a
+// certificate, or ErrNotFound when the certificate was not issued through
+// ACME at all (the CLI, API and portal create no order). This link - not the
+// certificate's id or its requested-by text - is what ties a certificate to
+// the account entitled to download or revoke it.
+func (s *Store) GetAcmeOrderByCertificate(ctx context.Context, certID int64) (*AcmeOrder, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+acmeOrderCols+` FROM acme_orders WHERE certificate_id = ? ORDER BY id DESC LIMIT 1`, certID)
 	o, err := scanAcmeOrder(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

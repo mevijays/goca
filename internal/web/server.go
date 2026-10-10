@@ -435,7 +435,6 @@ func (s *Server) routes(mux *routeMux) {
 	mux.HandleFunc("POST /acme/authz/{id}", s.handleACMEAuthz)
 	mux.HandleFunc("POST /acme/challenge/{id}", s.handleACMEChallenge)
 	mux.HandleFunc("POST /acme/cert/{id}", s.handleACMECert)
-	mux.HandleFunc("GET /acme/cert/{id}", s.handleACMECert)
 	mux.HandleFunc("POST /acme/revoke-cert", s.handleACMERevokeCert)
 
 	// ---- session pages ----
@@ -505,6 +504,7 @@ func (s *Server) routes(mux *routeMux) {
 	admin("POST /settings/acme/eab", s.handleACMEEABCreate)
 	admin("POST /settings/acme/eab/{id}/disable", s.handleACMEEABDisable)
 	admin("POST /settings/acme/eab/{id}/delete", s.handleACMEEABDelete)
+	admin("POST /settings/acme/accounts/{id}/deactivate", s.handleACMEAccountDeactivate)
 
 	admin("GET /settings/api-docs", s.handleAPIDocsPage)
 	admin("GET /settings/api-docs/openapi.yaml", s.handleOpenAPISpec)
@@ -584,6 +584,7 @@ func (s *Server) routes(mux *routeMux) {
 	apiAdmin("GET /api/v1/acme/accounts", s.apiACMEAccountList)
 	apiAdmin("GET /api/v1/acme/accounts/{id}", s.apiACMEAccountGet)
 	apiAdmin("GET /api/v1/acme/accounts/{id}/orders", s.apiACMEAccountOrders)
+	apiAdmin("POST /api/v1/acme/accounts/{id}/deactivate", s.apiACMEAccountDeactivate)
 
 	// Secret manager. Admin-only in this phase; a scoped, workload-facing
 	// fetch endpoint arrives with the Kubernetes CSI provider in a later

@@ -476,6 +476,9 @@ func (s *Server) apiCertIssue(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	in.Actor = currentUser(r).Username
+	// Never from the body (the field is json:"-"): only an administrator's
+	// effective role - capped for API tokens - may mint a subordinate CA.
+	in.AllowSubordinateCA = currentUser(r).IsAdmin()
 	res, err := s.svc.Issue(r.Context(), in)
 	if err != nil {
 		return badRequestFrom(err)
@@ -816,6 +819,9 @@ func badRequestFrom(err error) error {
 	var ae *apiError
 	if errors.As(err, &ae) {
 		return ae
+	}
+	if errors.Is(err, ca.ErrSubordinateCANotAllowed) {
+		return &apiError{Status: http.StatusForbidden, Msg: err.Error()}
 	}
 	return &apiError{Status: http.StatusBadRequest, Msg: err.Error()}
 }

@@ -105,9 +105,10 @@ goca acme eab disable cluster-a
 goca acme accounts list</pre>
       <button class="copy-btn" data-copy="#cli-eab" type="button">copy</button>
     </div>
-    <p class="hint">Disabling a credential stops it bootstrapping <em>new</em> accounts; accounts
-       already created with it keep renewing, since from registration onward they sign with
-       their own key, not the EAB secret.</p>
+    <p class="hint">Disabling a credential stops it bootstrapping new accounts <em>and</em> stops
+       every account it already created from getting certificates until it is re-enabled — the
+       lever for a leaked HMAC key. That includes a working cert-manager ClusterIssuer's renewals.
+       To cut off a single account instead, deactivate it below.</p>
   </div>
 </div>
 
@@ -169,7 +170,7 @@ goca acme accounts list</pre>
   {{if $d.Accounts}}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>ID</th><th>EAB credential</th><th>Contact</th><th>Status</th><th>Registered</th><th>Last used</th></tr></thead>
+      <thead><tr><th>ID</th><th>EAB credential</th><th>Contact</th><th>Status</th><th>Registered</th><th>Last used</th><th>Actions</th></tr></thead>
       <tbody>
       {{range $d.Accounts}}
         <tr>
@@ -179,6 +180,15 @@ goca acme accounts list</pre>
           <td><span class="badge {{if eq .Status "valid"}}ok{{else}}muted{{end}}">{{.Status}}</span></td>
           <td class="dim nowrap">{{fmtTime .CreatedAt}}</td>
           <td class="dim nowrap">{{fmtTimePtr .LastUsedAt}}</td>
+          <td class="nowrap">
+            {{if eq .Status "valid"}}
+            <form method="post" action="/settings/acme/accounts/{{.ID}}/deactivate" class="inline"
+                  data-confirm="Deactivate ACME account {{.ID}} ({{.EABName}})? It immediately loses the ability to order, download or revoke certificates. This cannot be undone - the client would have to register again with a usable EAB credential.">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+              <button class="linkbtn danger" type="submit">deactivate</button>
+            </form>
+            {{else}}<span class="dim">—</span>{{end}}
+          </td>
         </tr>
       {{end}}
       </tbody>

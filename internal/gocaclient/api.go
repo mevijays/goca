@@ -600,6 +600,12 @@ func (c *Client) DeleteEAB(ctx context.Context, id int64) error {
 	return err
 }
 
+// DeactivateACMEAccount permanently deactivates one ACME account (admin).
+func (c *Client) DeactivateACMEAccount(ctx context.Context, id int64) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/acme/accounts/"+strconv.FormatInt(id, 10)+"/deactivate", nil, nil)
+	return err
+}
+
 func (c *Client) ListACMEAccounts(ctx context.Context) (Result[[]AcmeAccount], error) {
 	var env acmeAccountsEnvelope
 	raw, err := c.get(ctx, "/api/v1/acme/accounts", &env)

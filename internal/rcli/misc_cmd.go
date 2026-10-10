@@ -703,7 +703,49 @@ func newACMEAccountsCmd() *cobra.Command {
 			return nil
 		},
 	})
-	cmd.AddCommand(newACMEAccountsShowCmd())
+	cmd.AddCommand(newACMEAccountsShowCmd(), newACMEAccountsDeactivateCmd())
+	return cmd
+}
+
+func newACMEAccountsDeactivateCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "deactivate <id>",
+		Short: "Permanently deactivate one ACME account (e.g. its key was compromised)",
+		Long: `Deactivate one ACME account. It immediately loses the ability to order,
+download or revoke certificates, and per RFC 8555 this is final: the client
+has to register again, which needs a usable EAB credential.
+
+To cut off every account bootstrapped from a leaked EAB credential at once,
+disable the credential instead: gocactl acme eab disable <id>.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := cmdContext(cmd)
+			defer cancel()
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("%q is not an account id (see `gocactl acme accounts list`)", args[0])
+			}
+			if !yes {
+				if !termio.Interactive() {
+					return fmt.Errorf("refusing to deactivate account %d non-interactively; pass --yes", id)
+				}
+				if !termio.AskYesNo(fmt.Sprintf("Permanently deactivate ACME account %d?", id), false) {
+					return nil
+				}
+			}
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			if err := c.DeactivateACMEAccount(ctx, id); err != nil {
+				return err
+			}
+			termio.OK("ACME account %d deactivated", id)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "do not ask for confirmation")
 	return cmd
 }
 

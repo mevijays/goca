@@ -855,9 +855,11 @@ name when the name is unambiguous.
 
 ### `goca acme eab disable <id|key-id|name>`
 
-Stops the credential bootstrapping *new* accounts. Accounts it already
-created keep working — from registration onward they authenticate with
-their own key, not the EAB secret.
+Stops the credential bootstrapping new accounts, and stops every account it
+already created from ordering or downloading certificates until it is
+re-enabled. This is the lever for a leaked HMAC key — and it stops a
+legitimate ClusterIssuer's renewals too. To cut off one account only, use
+`goca acme accounts deactivate <id>`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -881,6 +883,18 @@ contact, status, registration and last-used times. Alias: `ls`.
 
 One account's detail plus its order history (identifiers requested,
 resulting certificate id, status).
+
+### `goca acme accounts deactivate <id>`
+
+Permanently deactivates one account: it can no longer order, download or
+revoke certificates. Final per RFC 8555 — the client must register again,
+which needs a usable EAB credential. Use it when one account's key is
+compromised; to cut off every account from a leaked credential, disable the
+credential instead.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--yes` | off | skip the confirmation prompt (required non-interactively) |
 
 ### `goca acme status`
 

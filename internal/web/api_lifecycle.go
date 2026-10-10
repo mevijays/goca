@@ -144,6 +144,7 @@ func (s *Server) apiCertRenew(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	in.Actor = currentUser(r).Username
+	in.AllowSubordinateCA = currentUser(r).IsAdmin()
 	res, err := s.svc.Renew(r.Context(), c.ID, in)
 	if err != nil {
 		return badRequestFrom(err)
@@ -184,6 +185,8 @@ func (s *Server) apiCertRenewExpiring(w http.ResponseWriter, r *http.Request) er
 		SameKey:   body.SameKey,
 		RevokeOld: body.RevokeOld,
 		Actor:     currentUser(r).Username,
+
+		AllowSubordinateCA: currentUser(r).IsAdmin(),
 	})
 	renewed := make([]map[string]any, 0, len(results))
 	for _, res := range results {

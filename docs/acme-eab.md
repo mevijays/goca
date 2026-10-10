@@ -160,7 +160,8 @@ every other secret goca holds, and never decrypted for display).
 ```bash
 goca acme eab list                    # table of every credential
 goca acme eab show cluster-a          # by name (if unambiguous), id, or key id
-goca acme eab disable cluster-a       # stop new accounts; existing ones keep renewing
+goca acme eab disable cluster-a       # stop new accounts AND existing ones' orders
+goca acme accounts deactivate 3       # cut off one account only (permanent)
 goca acme eab delete cluster-a --yes  # only works once no accounts reference it
 goca acme accounts list               # every account any credential has bootstrapped
 goca acme accounts show 1             # one account's orders
@@ -438,9 +439,18 @@ is honored, authenticated either by the account that requested the
 certificate or by the certificate's own private key, per RFC 8555 §7.6.
 
 **A whole credential going bad** (leaked keyID/HMAC pair, decommissioned
-cluster): `goca acme eab disable <name>` stops it bootstrapping anything new.
-If the account it already created might be compromised too, revoke that
-account's certificates directly:
+cluster): `goca acme eab disable <name>` stops it bootstrapping anything new
+*and* stops every account it already created from ordering or downloading
+certificates — whoever used the leaked key is cut off immediately, not just
+future registrations. That includes your own legitimate ClusterIssuer, whose
+renewals stop too: create a fresh credential and re-point the issuer at it.
+
+**One account going bad** (its private key leaked, but the credential and its
+other accounts are fine): `goca acme accounts deactivate <id>`. Deactivation
+is permanent, per RFC 8555.
+
+Either way, certificates already issued stay valid until revoked; revoke
+them directly:
 
 ```bash
 goca cert revoke-many --query 'acme:cluster-a' --reason keyCompromise --yes --crl

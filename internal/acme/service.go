@@ -338,9 +338,9 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 		return nil, nil, Malformed("an order must request at least one identifier")
 	}
 
-	cred, err := s.st.GetEABCred(ctx, ar.account.EABID)
-	if err != nil {
-		return nil, nil, ServerInternal("%v", err)
+	cred, perr := s.activeCred(ctx, ar.account)
+	if perr != nil {
+		return nil, nil, perr
 	}
 
 	idents := make([]store.AcmeIdentifier, 0, len(req.Identifiers))
@@ -355,6 +355,9 @@ func (s *Service) NewOrder(ctx context.Context, body []byte) (*store.AcmeOrder, 
 		val := strings.ToLower(strings.TrimSpace(id.Value))
 		if val == "" {
 			return nil, nil, Malformed("an identifier value must not be empty")
+		}
+		if err := validDNSIdentifier(val); err != nil {
+			return nil, nil, RejectedIdentifier("%q: %v", val, err)
 		}
 		if !domainAllowed(cred.AllowedDomains, val) {
 			return nil, nil, RejectedIdentifier(
@@ -509,6 +512,18 @@ func (s *Service) Finalize(ctx context.Context, orderID int64, body []byte) (*Or
 		return nil, BadCSR("%v", err)
 	}
 
+	// The order's identifiers are the only names this account was authorized
+	// for, and the only kind goca's ACME supports is "dns". Anything else the
+	// CSR carries would otherwise be copied verbatim into the certificate by
+	// pki.Sign - IP, email and URI SANs (a SPIFFE ID, say) and the whole
+	// Subject - none of which the credential's allowed-domain scope ever saw.
+	if len(csr.IPAddresses) > 0 || len(csr.EmailAddresses) > 0 || len(csr.URIs) > 0 {
+		p := BadCSR("the CSR may only request DNS names; it also requests %s",
+			nonDNSSummary(csr))
+		_ = s.st.SetAcmeOrderError(ctx, order.ID, mustJSON(p))
+		return nil, p
+	}
+
 	want := map[string]bool{}
 	for _, id := range order.Identifiers {
 		want[id.Value] = true
@@ -524,9 +539,25 @@ func (s *Service) Finalize(ctx context.Context, orderID int64, body []byte) (*Or
 		return nil, p
 	}
 
-	cred, err := s.st.GetEABCred(ctx, ar.account.EABID)
-	if err != nil {
-		return nil, ServerInternal("%v", err)
+	// A CN is optional, but when present it must be one of the authorized
+	// names (the rule public ACME CAs apply too): goca's UI, search and a few
+	// legacy TLS stacks still treat the CN as the certificate's identity.
+	cn := strings.ToLower(strings.TrimSpace(csr.Subject.CommonName))
+	if cn != "" && !want[cn] {
+		p := BadCSR("the CSR's common name %q is not one of the order's authorized identifiers %v",
+			csr.Subject.CommonName, sortedKeys(want))
+		_ = s.st.SetAcmeOrderError(ctx, order.ID, mustJSON(p))
+		return nil, p
+	}
+	if cn == "" && len(order.Identifiers) > 0 {
+		// Most ACME clients (cert-manager included) leave the CN blank; give
+		// the certificate a legible one for the rest of goca's UI/CLI.
+		cn = order.Identifiers[0].Value
+	}
+
+	cred, perr := s.activeCred(ctx, ar.account)
+	if perr != nil {
+		return nil, perr
 	}
 
 	issueIn := ca.IssueInput{
@@ -539,12 +570,11 @@ func (s *Service) Finalize(ctx context.Context, orderID int64, body []byte) (*Or
 	if cred.CAID != nil {
 		issueIn.CARef = fmt.Sprint(*cred.CAID)
 	}
-	if csr.Subject.CommonName == "" && len(order.Identifiers) > 0 {
-		// Give the certificate a legible common name for the rest of goca's
-		// UI/CLI even though the client's CSR left it blank, which most
-		// modern ACME clients (cert-manager included) do.
-		issueIn.Subject.CommonName = order.Identifiers[0].Value
-	}
+	// Always override the Subject with the CN alone. Without this every other
+	// attribute in the CSR's Subject - O, OU, and so on - is copied into the
+	// certificate unchecked, and O in particular is a group claim to
+	// Kubernetes client-certificate authentication (O=system:masters).
+	issueIn.Subject = pki.Subject{CommonName: cn}
 
 	res, err := s.caSvc.Issue(ctx, issueIn)
 	if err != nil {
@@ -654,7 +684,25 @@ func (s *Service) GetChallenge(ctx context.Context, challengeID int64, body []by
 // chain, in PEM - what RFC 8555 §7.4.2 expects the certificate resource to
 // serve. certID is a goca certificates.id, taken from an order's Certificate
 // field or the /acme/cert/{id} URL.
-func (s *Service) GetCertificatePEM(ctx context.Context, certID int64) ([]byte, *Problem) {
+//
+// Certificate ids are sequential database ids, not secrets, so this must be
+// authenticated: it is a POST-as-GET (RFC 8555 §7.4.2) signed by the account
+// whose order produced the certificate. Anything else - an unsigned GET, a
+// certificate issued outside ACME, another account's certificate - gets the
+// same "no such certificate", so the endpoint cannot be used to enumerate
+// goca's certificate inventory or probe which ids exist.
+func (s *Service) GetCertificatePEM(ctx context.Context, certID int64, body []byte) ([]byte, *Problem) {
+	ar, perr := s.authenticate(ctx, body, s.certURL(certID))
+	if perr != nil {
+		return nil, perr
+	}
+	if !ar.jws.IsPostAsGet() {
+		return nil, Malformed("a certificate is fetched with POST-as-GET: the payload must be empty")
+	}
+	order, err := s.st.GetAcmeOrderByCertificate(ctx, certID)
+	if err != nil || order.AccountID != ar.account.ID {
+		return nil, NotFound("no such certificate")
+	}
 	rec, err := s.caSvc.GetCertificate(ctx, certID)
 	if err != nil {
 		return nil, NotFound("no such certificate")
@@ -742,12 +790,24 @@ func (s *Service) RevokeCert(ctx context.Context, body []byte) *Problem {
 
 	actor := "acme:cert-key"
 	if account != nil {
+		// Entitlement follows the order that produced the certificate: any
+		// account bootstrapped from the same EAB credential *id* may revoke
+		// it (the credential is the unit of trust, and cert-manager may
+		// re-register under it). This used to compare the certificate's
+		// requested-by text with "acme:"+credential name - but names are not
+		// unique, so a second credential that happened to share a name could
+		// revoke the first one's certificates.
+		order, err := s.st.GetAcmeOrderByCertificate(ctx, rec.ID)
+		if err != nil {
+			return Unauthorized("this account is not authorized to revoke this certificate")
+		}
+		owner, err := s.st.GetAcmeAccount(ctx, order.AccountID)
+		if err != nil || owner.EABID != account.EABID {
+			return Unauthorized("this account is not authorized to revoke this certificate")
+		}
 		cred, err := s.st.GetEABCred(ctx, account.EABID)
 		if err != nil {
 			return ServerInternal("%v", err)
-		}
-		if rec.RequestedBy != "acme:"+cred.Name {
-			return Unauthorized("this account is not authorized to revoke this certificate")
 		}
 		actor = "acme:" + cred.Name
 	}

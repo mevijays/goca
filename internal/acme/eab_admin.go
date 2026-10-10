@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mevijays/goca/internal/pki"
 	"github.com/mevijays/goca/internal/store"
 )
 
@@ -77,8 +78,23 @@ func (s *Service) CreateEAB(ctx context.Context, in CreateEABInput) (*CreateEABR
 	}
 	profile := strings.TrimSpace(in.Profile)
 	if profile == "" {
-		profile = "server"
+		profile = string(pki.ProfileServer)
 	}
+	// Validate now rather than at the first finalize: an unknown profile used
+	// to be stored as-is and then fail every order with a 500, long after the
+	// credential was handed to a cluster.
+	parsed, err := pki.ParseProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	// ACME issues leaf certificates to whoever holds the credential. An
+	// intermediate-ca profile would hand every bootstrapped account a CA that
+	// can sign for any name, with no administrator involved per issuance.
+	if parsed == pki.ProfileIntermCA {
+		return nil, errors.New(`the "intermediate-ca" profile cannot be used for ACME; ` +
+			`ACME issues leaf certificates only`)
+	}
+	profile = string(parsed)
 
 	var caID *int64
 	if ref := strings.TrimSpace(in.CARef); ref != "" {
@@ -179,8 +195,10 @@ func (s *Service) ResolveEAB(ctx context.Context, ref string) (*store.EABCred, e
 }
 
 // SetEABDisabled enables or disables a credential. Disabling stops it from
-// bootstrapping new accounts; accounts it already created are unaffected,
-// since from then on they authenticate with their own key.
+// bootstrapping new accounts and - via activeCred, checked on every order and
+// finalize - stops every account it already created from obtaining
+// certificates until it is re-enabled. That second half is what makes this
+// usable as incident response for a leaked HMAC key; see activeCred.
 func (s *Service) SetEABDisabled(ctx context.Context, id int64, disabled bool, actor string) error {
 	c, err := s.st.GetEABCred(ctx, id)
 	if err != nil {
@@ -217,6 +235,31 @@ func (s *Service) DeleteEAB(ctx context.Context, id int64, actor string) error {
 		return err
 	}
 	s.audit(ctx, actor, "acme.eab.delete", c.Name, "key_id="+c.KeyID)
+	return nil
+}
+
+// DeactivateAccount permanently deactivates one ACME account, as an
+// administrator. A deactivated account can no longer authenticate any
+// request - order, finalize, download or revoke - and per RFC 8555 §7.3.6
+// deactivation is final: the client must register again, which needs a
+// usable EAB credential.
+//
+// This is the narrow counterpart to disabling a credential (which cuts off
+// every account bootstrapped from it): use it when one account's key is
+// compromised but its siblings are fine. Deleting the account instead would
+// orphan its orders and the provenance of the certificates they produced.
+func (s *Service) DeactivateAccount(ctx context.Context, id int64, actor string) error {
+	a, err := s.st.GetAcmeAccount(ctx, id)
+	if err != nil {
+		return err
+	}
+	if a.Status == store.AcmeStatusDeactivated {
+		return fmt.Errorf("ACME account %d is already deactivated", id)
+	}
+	if err := s.st.SetAcmeAccountStatus(ctx, id, store.AcmeStatusDeactivated); err != nil {
+		return err
+	}
+	s.audit(ctx, actor, "acme.account.deactivate", fmt.Sprint(id), "by administrator")
 	return nil
 }
 

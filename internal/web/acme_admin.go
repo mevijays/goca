@@ -1,15 +1,18 @@
 package web
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/mevijays/goca/internal/acme"
+	"github.com/mevijays/goca/internal/store"
 )
 
 // This file is the operator-facing side of ACME: creating and retiring EAB
-// credentials, and viewing accounts they bootstrapped. It has nothing to do
+// credentials, and viewing and deactivating accounts they bootstrapped. It has nothing to do
 // with the wire protocol (acme_protocol.go) - these are ordinary portal pages
 // and REST API endpoints, authenticated the normal goca way (session or
 // bearer token), same as everything else in the CLI/API/portal trio.
@@ -86,7 +89,7 @@ func (s *Server) handleACMEEABDisable(w http.ResponseWriter, r *http.Request) {
 	if err := s.acme.SetEABDisabled(r.Context(), id, disabled, currentUser(r).Username); err != nil {
 		s.flash(w, r, "error", err.Error())
 	} else if disabled {
-		s.flash(w, r, "success", "Credential disabled. Accounts it already created keep working.")
+		s.flash(w, r, "success", "Credential disabled. Accounts it created can no longer order or download certificates until it is re-enabled.")
 	} else {
 		s.flash(w, r, "success", "Credential re-enabled.")
 	}
@@ -206,6 +209,35 @@ func (s *Server) apiACMEAccountGet(w http.ResponseWriter, r *http.Request) error
 	}
 	writeJSON(w, http.StatusOK, a)
 	return nil
+}
+
+func (s *Server) apiACMEAccountDeactivate(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r)
+	if err != nil {
+		return err
+	}
+	if err := s.acme.DeactivateAccount(r.Context(), id, currentUser(r).Username); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &apiError{Status: http.StatusNotFound, Msg: "no such ACME account"}
+		}
+		return badRequest("%v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": store.AcmeStatusDeactivated})
+	return nil
+}
+
+func (s *Server) handleACMEAccountDeactivate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		s.renderError(w, r, http.StatusBadRequest, "Bad account id", err.Error())
+		return
+	}
+	if err := s.acme.DeactivateAccount(r.Context(), id, currentUser(r).Username); err != nil {
+		s.flash(w, r, "error", err.Error())
+	} else {
+		s.flash(w, r, "success", fmt.Sprintf("ACME account %d deactivated. It can no longer order, download or revoke certificates.", id))
+	}
+	http.Redirect(w, r, "/settings/acme", http.StatusSeeOther)
 }
 
 func (s *Server) apiACMEAccountOrders(w http.ResponseWriter, r *http.Request) error {

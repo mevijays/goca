@@ -405,6 +405,8 @@ func (s *Server) handleCertCreate(w http.ResponseWriter, r *http.Request) {
 		StoreKey: &storeKey,
 		Note:     form.Note,
 		Actor:    currentUser(r).Username,
+
+		AllowSubordinateCA: currentUser(r).IsAdmin(),
 	}
 
 	res, err := s.svc.Issue(r.Context(), in)

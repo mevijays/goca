@@ -1411,7 +1411,10 @@ paths:
     post:
       tags: [ACME access]
       summary: Disable or re-enable an EAB credential
-      description: Disabling stops it bootstrapping *new* accounts; accounts it already created keep working.
+      description: >-
+        Disabling stops it bootstrapping new accounts and stops every account it already
+        created from ordering or downloading certificates until it is re-enabled - the
+        lever for a leaked HMAC key. To cut off one account only, deactivate that account.
       requestBody:
         content:
           application/json:
@@ -1703,6 +1706,31 @@ paths:
                   orders:
                     type: array
                     items: { $ref: "#/components/schemas/AcmeOrder" }
+  /acme/accounts/{id}/deactivate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [ACME access]
+      summary: Permanently deactivate one ACME account
+      description: >-
+        The account immediately loses the ability to order, download or revoke
+        certificates. Final per RFC 8555 - the client must register again, which needs a
+        usable EAB credential. To cut off every account from one credential, disable the
+        credential instead.
+      responses:
+        "200":
+          description: Deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deactivated }
+        "400": { description: Already deactivated }
+        "404": { description: No such account }
 
 components:
   securitySchemes:

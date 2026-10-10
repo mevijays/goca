@@ -266,30 +266,24 @@ func (s *Server) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 //
 
 func (s *Server) handleACMECert(w http.ResponseWriter, r *http.Request) {
+	// POST-as-GET only, signed by the account whose order produced the
+	// certificate (RFC 8555 §7.4.2) - see acme.Service.GetCertificatePEM for
+	// why. There is deliberately no GET route: certificate ids are sequential,
+	// and an unauthenticated GET let anyone walk goca's entire inventory.
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		if r.Method == http.MethodPost {
-			s.acmeNonce(w)
-		}
+		s.acmeNonce(w)
 		s.acmeError(w, perr)
 		return
 	}
-	// The download itself needs no further authentication once the id is
-	// known: it is an unguessable, per-issuance identifier, and the
-	// certificate is a public artefact goca already serves unauthenticated
-	// elsewhere (/public/ca, cert.pem downloads). A POST-as-GET body, if
-	// present, is accepted but not required to validate.
-	if r.Method == http.MethodPost {
-		if _, perr := readACMEBody(r); perr != nil {
-			s.acmeNonce(w)
-			s.acmeError(w, perr)
-			return
-		}
-	}
-	chain, perr := s.acme.GetCertificatePEM(r.Context(), id)
-	if r.Method == http.MethodPost {
+	body, perr := readACMEBody(r)
+	if perr != nil {
 		s.acmeNonce(w)
+		s.acmeError(w, perr)
+		return
 	}
+	chain, perr := s.acme.GetCertificatePEM(r.Context(), id, body)
+	s.acmeNonce(w)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
