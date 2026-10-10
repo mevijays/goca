@@ -831,7 +831,8 @@ client's job, not an operator's. Full walkthrough, including a cert-manager
 | `--ca` | the default issuing CA, resolved per order | authority accounts bootstrapped with this credential issue from |
 | `--profile` | `server` | certificate profile for accounts using this credential |
 | `--days` | the CA/global default | certificate validity in days |
-| `--allowed-domain` | — | glob pattern an order's identifiers must match (repeatable); default: unrestricted |
+| `--allowed-domain` | — | glob pattern an order's identifiers must match (repeatable). **Required** unless `--allow-any-domain` |
+| `--allow-any-domain` | off | allow certificates for any hostname — see below |
 | `--max-accounts` | `0` (unlimited) | cap on accounts bootstrapped with this credential |
 | `--expires-in-days` | `0` (never) | disable this credential automatically after N days |
 
@@ -842,6 +843,14 @@ only its encrypted form is stored.
 goca acme eab create cluster-a --ca acme-issuing-ca \
     --allowed-domain '*.svc.cluster-a.internal' --max-accounts 1
 ```
+
+goca's ACME performs no domain-control check — the credential itself is the
+trust decision — so its allowed domains are the only limit on which hostnames
+its holders can get certificates for. A credential with no domains could obtain
+one for any name the authority is trusted for (goca's own, your ingress
+gateway's), so creating one requires `--allow-any-domain` explicitly. Patterns
+are validated at creation: a malformed glob, or one that matches everything
+(`*`, `*.*`), is refused rather than stored.
 
 ### `goca acme eab list`
 

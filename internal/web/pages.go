@@ -580,6 +580,13 @@ func (s *Server) handleCSRToolSubmit(w http.ResponseWriter, r *http.Request) {
 //
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	s.renderSettings(w, r, "")
+}
+
+// renderSettings renders the settings page. newToken is a just-created API
+// token's plaintext, shown exactly once; it is rendered directly into the
+// response of the POST that created it - see handleTokenCreate.
+func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, newToken string) {
 	ctx := r.Context()
 	u := currentUser(r)
 
@@ -591,7 +598,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"Tokens":          tokens,
-		"NewToken":        r.URL.Query().Get("token"),
+		"NewToken":        newToken,
 		"ConfigPath":      s.cfg.Path,
 		"DBPath":          s.cfg.DatabaseSummary(),
 		"DataDir":         s.cfg.DataDir,
@@ -645,7 +652,12 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.svc.AuditWithIP(r.Context(), u.Username, "token.create", rec.Name, "role="+rec.Role, s.clientIP(r))
-	http.Redirect(w, r, "/settings?token="+url.QueryEscape(plaintext), http.StatusSeeOther)
+	// Render the one-time reveal straight into this POST's response. This
+	// used to redirect to /settings?token=<plaintext>, putting a working
+	// bearer token - an admin's, often - into the URL: reverse-proxy access
+	// logs, browser history and anything else that records URLs.
+	noStore(w)
+	s.renderSettings(w, r, plaintext)
 }
 
 func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {

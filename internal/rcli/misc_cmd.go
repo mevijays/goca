@@ -1,6 +1,7 @@
 package rcli
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -487,7 +488,7 @@ func newACMEEABCmd() *cobra.Command {
 		Short:   "Manage External Account Binding credentials",
 		Aliases: []string{"credential", "credentials"},
 	}
-	cmd.AddCommand(newACMEEABCreateCmd(), newACMEEABListCmd(), newACMEEABDisableCmd(), newACMEEABDeleteCmd())
+	cmd.AddCommand(newACMEEABCreateCmd(), newACMEEABListCmd(), newACMEEABShowCmd(), newACMEEABDisableCmd(), newACMEEABDeleteCmd())
 	return cmd
 }
 
@@ -496,13 +497,16 @@ func newACMEEABCreateCmd() *cobra.Command {
 		caRef, profile string
 		days           int
 		allowedDomains []string
+		allowAny       bool
 		maxAccounts    int
 		expiresInDays  int
 	)
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an EAB credential",
-		Args:  cobra.ExactArgs(1),
+		Example: `  gocactl acme eab create cluster-a --allowed-domain '*.svc.cluster-a.internal' --max-accounts 1
+  gocactl acme eab create lab-wide --allow-any-domain   # any hostname - see --allow-any-domain`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := cmdContext(cmd)
 			defer cancel()
@@ -512,8 +516,8 @@ func newACMEEABCreateCmd() *cobra.Command {
 			}
 			res, err := c.CreateEAB(ctx, gocaclient.CreateEABInput{
 				Name: args[0], CARef: caRef, Profile: profile, Days: days,
-				AllowedDomains: allowedDomains, MaxAccounts: maxAccounts,
-				ExpiresInDays: expiresInDays,
+				AllowedDomains: allowedDomains, AllowAnyDomain: allowAny,
+				MaxAccounts: maxAccounts, ExpiresInDays: expiresInDays,
 			})
 			if err != nil {
 				return err
@@ -541,7 +545,9 @@ func newACMEEABCreateCmd() *cobra.Command {
 	fl.StringVar(&caRef, "ca", "", "authority accounts issue from")
 	fl.StringVar(&profile, "profile", "server", "certificate profile")
 	fl.IntVar(&days, "days", 0, "certificate validity in days")
-	fl.StringSliceVar(&allowedDomains, "allowed-domain", nil, "glob pattern an order must match (repeatable)")
+	fl.StringSliceVar(&allowedDomains, "allowed-domain", nil, "glob pattern an order must match (repeatable; required unless --allow-any-domain)")
+	fl.BoolVar(&allowAny, "allow-any-domain", false,
+		"allow certificates for ANY hostname; goca's ACME does no domain-control check, so this lets holders impersonate any host")
 	fl.IntVar(&maxAccounts, "max-accounts", 0, "cap on accounts bootstrapped with it (0 = unlimited)")
 	fl.IntVar(&expiresInDays, "expires-in-days", 0, "auto-disable after N days (0 = never)")
 	return cmd
@@ -595,6 +601,105 @@ func newACMEEABListCmd() *cobra.Command {
 			t.Flush()
 			return nil
 		},
+	}
+}
+
+// newACMEEABShowCmd mirrors `goca acme eab show`: by numeric id, key id, or
+// display name when exactly one credential has it (names aren't unique).
+func newACMEEABShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <id|key-id|name>",
+		Short: "Show one EAB credential in detail",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := cmdContext(cmd)
+			defer cancel()
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			cred, raw, err := resolveEAB(ctx, c, args[0])
+			if err != nil {
+				return err
+			}
+			if flagJSON {
+				return termio.PrintRaw(raw)
+			}
+			termio.Section(cred.Name)
+			termio.KV("id", fmt.Sprint(cred.ID))
+			termio.KV("key id", cred.KeyID)
+			if cred.CAID != nil {
+				termio.KV("authority", fmt.Sprint(*cred.CAID))
+			} else {
+				termio.KV("authority", "default issuing CA (resolved per order)")
+			}
+			termio.KV("profile", cred.Profile)
+			if cred.Days > 0 {
+				termio.KV("certificate validity", fmt.Sprintf("%d days", cred.Days))
+			} else {
+				termio.KV("certificate validity", "authority/global default")
+			}
+			if len(cred.AllowedDomains) > 0 {
+				termio.KV("allowed domains", strings.Join(cred.AllowedDomains, ", "))
+			} else {
+				termio.KV("allowed domains", "ANY hostname (unrestricted)")
+			}
+			if cred.MaxAccounts > 0 {
+				termio.KV("accounts", fmt.Sprintf("%d / %d", cred.AccountCount, cred.MaxAccounts))
+			} else {
+				termio.KV("accounts", fmt.Sprintf("%d (unlimited)", cred.AccountCount))
+			}
+			state := "active"
+			if cred.Disabled {
+				state = "disabled"
+			}
+			termio.KV("state", state)
+			if cred.ExpiresAt != nil {
+				termio.KV("expires", cred.ExpiresAt.Format("2006-01-02"))
+			}
+			termio.KV("created", fmt.Sprintf("%s by %s", cred.CreatedAt.Format("2006-01-02 15:04"), cred.CreatedBy))
+			if cred.LastUsedAt != nil {
+				termio.KV("last used", cred.LastUsedAt.Format("2006-01-02 15:04"))
+			}
+			return nil
+		},
+	}
+}
+
+// resolveEAB finds one credential by numeric id, key id, or unambiguous name.
+func resolveEAB(ctx context.Context, c *gocaclient.Client, ref string) (*gocaclient.EABCred, json.RawMessage, error) {
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		res, err := c.GetEAB(ctx, id)
+		if err == nil {
+			return res.Value, res.Raw, nil
+		}
+		if !gocaclient.IsNotFound(err) {
+			return nil, nil, err
+		}
+	}
+	list, err := c.ListEAB(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	var byName []gocaclient.EABCred
+	for _, e := range list.Value {
+		if e.KeyID == ref {
+			e := e
+			raw, _ := json.Marshal(e)
+			return &e, raw, nil
+		}
+		if strings.EqualFold(e.Name, ref) {
+			byName = append(byName, e)
+		}
+	}
+	switch len(byName) {
+	case 1:
+		raw, _ := json.Marshal(byName[0])
+		return &byName[0], raw, nil
+	case 0:
+		return nil, nil, fmt.Errorf("no EAB credential matches %q (see `gocactl acme eab list`)", ref)
+	default:
+		return nil, nil, fmt.Errorf("%q names %d EAB credentials; use its id or key id instead", ref, len(byName))
 	}
 }
 

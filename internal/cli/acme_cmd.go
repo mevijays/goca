@@ -57,6 +57,7 @@ func newACMEEABCreateCmd() *cobra.Command {
 		profile        string
 		days           int
 		allowedDomains []string
+		allowAny       bool
 		maxAccounts    int
 		expiresInDays  int
 	)
@@ -69,11 +70,16 @@ here - only its encrypted form is stored, the same way private keys are.
 
 Everything an ACME account bootstrapped with this credential is allowed to do
 is decided here, not negotiated per request: which authority signs its
-certificates, what profile, and optionally which domains it may request and
-how many accounts may ever be created with it.`),
+certificates, what profile, which domains it may request and how many
+accounts may ever be created with it.
+
+goca's ACME grants authorizations without any domain-control check - the
+credential IS the trust decision - so --allowed-domain is the only thing
+limiting which hostnames its holders can get certificates for. It is
+required; --allow-any-domain opts out explicitly.`),
 		Example: strings.TrimSpace(`
   goca acme eab create cluster-a --ca acme-issuing-ca --allowed-domain '*.svc.cluster-a.internal'
-  goca acme eab create cluster-b --profile server --days 90 --max-accounts 1
+  goca acme eab create cluster-b --allowed-domain '*.cluster-b.internal' --days 90 --max-accounts 1
   goca acme eab create shared --allowed-domain '*.internal.lab' --allowed-domain '*.corp.lab'`),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -90,6 +96,7 @@ how many accounts may ever be created with it.`),
 				Profile:        profile,
 				Days:           days,
 				AllowedDomains: allowedDomains,
+				AllowAnyDomain: allowAny,
 				MaxAccounts:    maxAccounts,
 				ExpiresInDays:  expiresInDays,
 				Actor:          a.actor(),
@@ -128,7 +135,9 @@ how many accounts may ever be created with it.`),
 	fl.StringVar(&profile, "profile", "server", "certificate profile for accounts bootstrapped with this credential")
 	fl.IntVar(&days, "days", 0, "certificate validity in days (default: the authority/global default)")
 	fl.StringSliceVar(&allowedDomains, "allowed-domain", nil,
-		"glob pattern an order's identifiers must match (repeatable); default: unrestricted")
+		"glob pattern an order's identifiers must match (repeatable; required unless --allow-any-domain)")
+	fl.BoolVar(&allowAny, "allow-any-domain", false,
+		"allow certificates for ANY hostname; goca's ACME does no domain-control check, so this lets holders impersonate any host")
 	fl.IntVar(&maxAccounts, "max-accounts", 0, "cap on accounts bootstrapped with this credential (0 = unlimited)")
 	fl.IntVar(&expiresInDays, "expires-in-days", 0, "disable this credential automatically after N days (0 = never)")
 	return cmd

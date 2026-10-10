@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mevijays/goca/internal/ca"
@@ -52,7 +53,7 @@ func TestResolveEABByIDKeyIDAndName(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
 
-	res, err := svc.CreateEAB(ctx, CreateEABInput{Name: "cluster-a", Actor: "t"})
+	res, err := svc.CreateEAB(ctx, CreateEABInput{Name: "cluster-a", AllowAnyDomain: true, Actor: "t"})
 	if err != nil {
 		t.Fatalf("CreateEAB: %v", err)
 	}
@@ -77,10 +78,10 @@ func TestResolveEABAmbiguousNameIsRejected(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "shared", Actor: "t"}); err != nil {
+	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "shared", AllowAnyDomain: true, Actor: "t"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "shared", Actor: "t"}); err != nil {
+	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "shared", AllowAnyDomain: true, Actor: "t"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,7 +94,7 @@ func TestDeleteEABRefusesWhileAccountsExist(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
 
-	res, err := svc.CreateEAB(ctx, CreateEABInput{Name: "in-use", Actor: "t"})
+	res, err := svc.CreateEAB(ctx, CreateEABInput{Name: "in-use", AllowAnyDomain: true, Actor: "t"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,9 +115,52 @@ func TestDeleteEABRefusesWhileAccountsExist(t *testing.T) {
 func TestCreateEABRejectsUnknownCA(t *testing.T) {
 	svc := newTestService(t)
 	_, err := svc.CreateEAB(context.Background(), CreateEABInput{
-		Name: "x", CARef: "no-such-authority", Actor: "t",
+		Name: "x", CARef: "no-such-authority", AllowAnyDomain: true, Actor: "t",
 	})
 	if err == nil {
 		t.Fatal("CreateEAB accepted a nonexistent authority reference")
+	}
+	// Assert the reason: other validation (domains, profile) runs earlier,
+	// and a test that only checks err != nil would keep passing for those.
+	if !strings.Contains(err.Error(), "no-such-authority") {
+		t.Fatalf("error %q is not about the unknown authority", err)
+	}
+}
+
+func TestCreateEABRequiresAnExplicitDomainScope(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	// No domains and no opt-in: refused, because goca's ACME performs no
+	// domain-control check - such a credential could get any hostname.
+	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "blank", Actor: "t"}); err == nil ||
+		!strings.Contains(err.Error(), "no allowed domains") {
+		t.Fatalf("blank scope: err = %v, want a refusal explaining it", err)
+	}
+	// Patterns that read like a restriction but match everything.
+	for _, p := range []string{"*", "*.*", "?*"} {
+		if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "x", AllowedDomains: []string{p}, Actor: "t"}); err == nil {
+			t.Fatalf("pattern %q matches every hostname but was accepted", p)
+		}
+	}
+	// A malformed glob used to be stored and then silently never match.
+	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "x", AllowedDomains: []string{"[abc.internal"}, Actor: "t"}); err == nil {
+		t.Fatal("malformed glob accepted")
+	}
+	// Contradictory input.
+	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "x", AllowedDomains: []string{"*.a.internal"}, AllowAnyDomain: true, Actor: "t"}); err == nil {
+		t.Fatal("domains + allow-any accepted together")
+	}
+	// Normalized: trimmed, lower-cased, de-duplicated.
+	res, err := svc.CreateEAB(ctx, CreateEABInput{Name: "ok", AllowedDomains: []string{" *.A.Internal ", "*.a.internal", ""}, Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Cred.AllowedDomains; len(got) != 1 || got[0] != "*.a.internal" {
+		t.Fatalf("stored domains = %q, want [*.a.internal]", got)
+	}
+	// Explicit opt-in still works.
+	if _, err := svc.CreateEAB(ctx, CreateEABInput{Name: "any", AllowAnyDomain: true, Actor: "t"}); err != nil {
+		t.Fatalf("explicit allow-any refused: %v", err)
 	}
 }

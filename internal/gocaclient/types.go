@@ -472,6 +472,7 @@ type CreateEABInput struct {
 	Profile        string   `json:"profile"`
 	Days           int      `json:"days"`
 	AllowedDomains []string `json:"allowed_domains"`
+	AllowAnyDomain bool     `json:"allow_any_domain"`
 	MaxAccounts    int      `json:"max_accounts"`
 	ExpiresInDays  int      `json:"expires_in_days"`
 }

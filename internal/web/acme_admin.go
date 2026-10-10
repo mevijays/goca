@@ -22,6 +22,13 @@ import (
 //
 
 func (s *Server) handleACMESettings(w http.ResponseWriter, r *http.Request) {
+	s.renderACMESettings(w, r, "", "")
+}
+
+// renderACMESettings renders the ACME page. newKeyID/newSecret describe a
+// just-created EAB credential, whose HMAC key is shown exactly once - see
+// handleACMEEABCreate.
+func (s *Server) renderACMESettings(w http.ResponseWriter, r *http.Request, newKeyID, newSecret string) {
 	creds, err := s.acme.ListEAB(r.Context())
 	if err != nil {
 		s.renderError(w, r, http.StatusInternalServerError, "Database error", err.Error())
@@ -45,8 +52,8 @@ func (s *Server) handleACMESettings(w http.ResponseWriter, r *http.Request) {
 			"Accounts":     accounts,
 			"CAs":          cas,
 			"DirectoryURL": s.acme.DirectoryURL(),
-			"NewSecret":    r.URL.Query().Get("secret"),
-			"NewKeyID":     r.URL.Query().Get("key_id"),
+			"NewSecret":    newSecret,
+			"NewKeyID":     newKeyID,
 		},
 	})
 }
@@ -66,6 +73,7 @@ func (s *Server) handleACMEEABCreate(w http.ResponseWriter, r *http.Request) {
 		Profile:        r.FormValue("profile"),
 		Days:           days,
 		AllowedDomains: splitCSV(r.FormValue("allowed_domains")),
+		AllowAnyDomain: r.FormValue("allow_any_domain") == "1",
 		MaxAccounts:    maxAccounts,
 		ExpiresInDays:  expiresIn,
 		Actor:          currentUser(r).Username,
@@ -75,8 +83,12 @@ func (s *Server) handleACMEEABCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings/acme", http.StatusSeeOther)
 		return
 	}
-	q := "?key_id=" + res.Cred.KeyID + "&secret=" + res.HMACKeyB64
-	http.Redirect(w, r, "/settings/acme"+q, http.StatusSeeOther)
+	// Render the one-time reveal straight into this POST's response. This used
+	// to redirect to /settings/acme?key_id=...&secret=<HMAC key>, putting a
+	// usable EAB secret into reverse-proxy access logs and browser history -
+	// anyone who could read either could register an ACME account with it.
+	noStore(w)
+	s.renderACMESettings(w, r, res.Cred.KeyID, res.HMACKeyB64)
 }
 
 func (s *Server) handleACMEEABDisable(w http.ResponseWriter, r *http.Request) {

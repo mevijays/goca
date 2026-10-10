@@ -90,6 +90,24 @@ a:hover { text-decoration: underline; }
 .mainnav a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 .mainnav a.active { background: var(--accent-dim); color: var(--accent); }
 
+/* Narrow screens: twelve nav items wrapped into a block that pushed every
+   page's content a third of the way down a phone screen. Collapse them
+   behind a Menu button - only when app.js has run (.js), so a browser
+   without JavaScript keeps the wrapped nav instead of losing it. */
+.navtoggle { display: none; }
+@media (max-width: 1100px) {
+  .js .navtoggle {
+    display: inline-flex; align-items: center;
+    margin-left: auto; order: 2;
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--text); font: inherit; font-weight: 500; cursor: pointer;
+  }
+  .js .userbox { order: 3; }
+  .js .mainnav { display: none; order: 10; flex-basis: 100%; flex-direction: column; margin: 4px 0 8px; }
+  .js .topbar.nav-open .mainnav { display: flex; }
+  .js .topbar { height: auto; padding-top: 10px; padding-bottom: 10px; }
+}
+
 .userbox { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .user-name { color: var(--text-dim); }
 .inline { display: inline; }
@@ -314,3 +332,8 @@ pre.pem {
   .dl dt { margin-top: 8px; }
   main.with-nav { padding: 18px 14px 40px; }
 }
+
+/* Inline checkbox with its label text, e.g. an explicit opt-in under a field. */
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-top: 10px; }
+label.check input { width: auto; margin: 0; }
+.hint.warn-text { color: var(--danger); }

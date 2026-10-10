@@ -2003,7 +2003,7 @@ components:
         ca_id: { type: integer, nullable: true, description: "null = the default issuing CA, resolved per order" }
         profile: { type: string }
         days: { type: integer, description: "0 = the CA/global default" }
-        allowed_domains: { type: array, items: { type: string }, description: "shell-glob patterns; empty = unrestricted" }
+        allowed_domains: { type: array, items: { type: string }, description: "shell-glob patterns; empty = any hostname (only possible when created with allow_any_domain)" }
         max_accounts: { type: integer, description: "0 = unlimited" }
         account_count: { type: integer }
         disabled: { type: boolean }
@@ -2020,7 +2020,18 @@ components:
         ca: { type: string, description: "authority accounts issue from; empty = default issuing CA" }
         profile: { type: string, default: server }
         days: { type: integer }
-        allowed_domains: { type: array, items: { type: string } }
+        allowed_domains:
+          type: array
+          items: { type: string }
+          description: >-
+            Shell-glob patterns an order's identifiers must match. Required unless
+            allow_any_domain is true: goca's ACME performs no domain-control check, so this
+            is the only limit on which hostnames the credential can get certificates for.
+            Malformed patterns and ones matching everything ("*") are rejected.
+        allow_any_domain:
+          type: boolean
+          default: false
+          description: Explicitly create a credential that can get certificates for ANY hostname. Mutually exclusive with allowed_domains.
         max_accounts: { type: integer }
         expires_in_days: { type: integer, description: "auto-disable after N days; 0 = never" }
 

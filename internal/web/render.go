@@ -2,7 +2,9 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -31,7 +33,41 @@ type templates struct {
 	pages map[string]*template.Template
 }
 
+// assetVersions maps each embedded static file to a short hash of its
+// content, so asset URLs change exactly when the file does.
+var assetVersions = func() map[string]string {
+	out := map[string]string{}
+	_ = fs.WalkDir(staticFS, "static", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := staticFS.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(b)
+		out[strings.TrimPrefix(p, "static/")] = hex.EncodeToString(sum[:6])
+		return nil
+	})
+	return out
+}()
+
+// assetURL returns a cache-busting URL for an embedded static file.
+//
+// Static files used to be linked as plain /static/app.js with an hour of
+// caching, so after every upgrade browsers kept running the previous
+// release's app.js and app.css against the new release's templates for up
+// to an hour. That is not cosmetic here: confirmations and form toggles live
+// in app.js, so new markup paired with an old script silently loses them.
+func assetURL(name string) string {
+	if v, ok := assetVersions[name]; ok {
+		return "/static/" + name + "?v=" + v
+	}
+	return "/static/" + name
+}
+
 var funcMap = template.FuncMap{
+	"asset": assetURL,
 	"fmtTime": func(t time.Time) string {
 		if t.IsZero() {
 			return "-"
@@ -248,6 +284,13 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 	})
 }
 
+// noStore marks a response as never to be cached or kept in the back/forward
+// cache - for pages that reveal a secret exactly once.
+func noStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+
 // staticHandler serves the embedded CSS/JS with long-lived caching.
 func staticHandler() http.Handler {
 	sub, err := fs.Sub(staticFS, "static")
@@ -256,7 +299,12 @@ func staticHandler() http.Handler {
 	}
 	fileServer := http.FileServer(http.FS(sub))
 	return http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		if r.URL.Query().Get("v") != "" {
+			// A versioned URL's content can never change (see assetURL).
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+		}
 		fileServer.ServeHTTP(w, r)
 	}))
 }

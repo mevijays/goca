@@ -144,7 +144,7 @@
       {{end}}
       {{if .User.IsAdmin}}{{if $ca.HasKey}}
       <a class="btn danger small" href="/cas/{{$ca.ID}}/download/ca.key"
-         onclick="return confirm('This downloads the CA private key in cleartext. Continue?')">Private key</a>
+         data-confirm="This downloads the CA private key for {{$ca.Name}} in cleartext. Anyone holding it can issue certificates this authority signs. Continue?">Private key</a>
       {{end}}{{end}}
     </div>
 

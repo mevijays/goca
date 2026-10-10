@@ -5,19 +5,19 @@
     <h1>ACME</h1>
     <p class="subtitle">RFC 8555, External Account Binding only — no HTTP-01/DNS-01 challenge is ever
        validated. An EAB credential <em>is</em> the trust decision: it binds every account
-       bootstrapped with it to one authority, one profile, and optionally a set of domains.</p>
+       bootstrapped with it to one authority, one profile, and a set of domains.</p>
   </div>
 </div>
 
 <div class="callout info">
-  Directory URL: <span class="mono">{{$d.DirectoryURL}}</span>
+  <strong>Directory URL</strong>
   <div class="copy-wrap" style="margin-top:8px">
     <pre class="pem" id="dir-url">{{$d.DirectoryURL}}</pre>
     <button class="copy-btn" data-copy="#dir-url" type="button">copy</button>
   </div>
   Point a cert-manager <span class="mono">ClusterIssuer</span>'s <span class="mono">spec.acme.server</span>
-  at this URL. See <a href="https://github.com/mevijays/goca/blob/main/ACME-EAB.md">ACME-EAB.md</a> for the
-  full YAML.
+  at this URL. See the <a href="https://mevijays.github.io/goca/acme-eab/" rel="noopener">ACME guide</a>
+  for the full ClusterIssuer YAML.
 </div>
 
 {{if $d.NewSecret}}
@@ -64,6 +64,7 @@
         <div class="field">
           <label for="days">Validity (days)</label>
           <input type="number" id="days" name="days" min="0" placeholder="authority default" value="0">
+          <p class="hint">0 = the authority's default. ACME clients' own requested lifetime is not used.</p>
         </div>
       </div>
       <div class="field">
@@ -72,8 +73,15 @@
                placeholder="*.svc.cluster-a.internal, *.internal.lab">
         <p class="hint">Comma separated shell-glob patterns. <span class="mono">*</span> matches
            across dot boundaries, so <span class="mono">*.internal.lab</span> also covers
-           <span class="mono">a.b.internal.lab</span>. Leave blank to allow any domain — the
-           authority itself may still be constrained separately.</p>
+           <span class="mono">a.b.internal.lab</span>. Required: goca's ACME does no domain-control
+           check, so this list is the only limit on which hostnames this credential can get
+           certificates for.</p>
+        <label class="check">
+          <input type="checkbox" name="allow_any_domain" value="1">
+          Allow <strong>any</strong> hostname instead (leave the field above empty)
+        </label>
+        <p class="hint warn-text">Holders could then get a certificate for any name the authority
+           is trusted for — this portal, your ingress gateway, anything.</p>
       </div>
       <div class="field-row">
         <div class="field">
@@ -84,7 +92,8 @@
         <div class="field">
           <label for="expires_in_days">Credential expires in (days)</label>
           <input type="number" id="expires_in_days" name="expires_in_days" min="0" value="0">
-          <p class="hint">0 = never. Only disables new registrations — existing accounts keep working.</p>
+          <p class="hint">0 = never. Expiry only stops new registrations — accounts already
+             created keep working. To cut them off, disable the credential.</p>
         </div>
       </div>
       <button class="btn" type="submit">Create credential</button>
@@ -133,14 +142,15 @@ goca acme accounts list</pre>
           <td class="mono">{{.KeyID}}</td>
           <td class="dim">{{if .CAID}}#{{.CAID}}{{else}}default{{end}}</td>
           <td class="dim">{{.Profile}}</td>
-          <td class="dim mono" style="font-size:11px">{{if .AllowedDomains}}{{join .AllowedDomains ", "}}{{else}}any{{end}}</td>
+          <td class="dim mono" style="font-size:11px">{{if .AllowedDomains}}{{join .AllowedDomains ", "}}{{else}}<span class="badge danger" title="Accounts from this credential can get a certificate for any hostname">ANY HOSTNAME</span>{{end}}</td>
           <td class="num dim">{{.AccountCount}}{{if .MaxAccounts}} / {{.MaxAccounts}}{{end}}</td>
           <td>
             {{if .Disabled}}<span class="badge danger">disabled</span>
             {{else}}<span class="badge ok">active</span>{{end}}
           </td>
           <td class="right nowrap">
-            <form method="post" action="/settings/acme/eab/{{.ID}}/disable" class="inline">
+            <form method="post" action="/settings/acme/eab/{{.ID}}/disable" class="inline"
+                  {{if not .Disabled}}data-confirm="Disable EAB credential {{.Name}}? Its {{.AccountCount}} account(s) immediately stop being able to order or download certificates - including a working cert-manager ClusterIssuer's renewals."{{end}}>
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
               <input type="hidden" name="disabled" value="{{if .Disabled}}0{{else}}1{{end}}">
               <button class="linkbtn" type="submit">{{if .Disabled}}enable{{else}}disable{{end}}</button>

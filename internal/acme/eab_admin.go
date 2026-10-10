@@ -31,8 +31,15 @@ type CreateEABInput struct {
 	// Days is the certificate validity; 0 means the CA's/global default.
 	Days int `json:"days"`
 	// AllowedDomains restricts which identifiers an order from an account
-	// bootstrapped with this credential may request. Empty means unrestricted.
+	// bootstrapped with this credential may request.
 	AllowedDomains []string `json:"allowed_domains"`
+	// AllowAnyDomain must be set to create a credential with no
+	// AllowedDomains. goca grants ACME authorizations without any
+	// domain-control check, so such a credential can obtain a certificate for
+	// any hostname at all - goca's own, the ingress gateway's, anything the
+	// issuing CA is trusted for. That used to be what simply leaving the
+	// domains blank did; it now has to be asked for.
+	AllowAnyDomain bool `json:"allow_any_domain"`
 	// MaxAccounts caps how many ACME accounts may be bootstrapped with this
 	// credential; 0 means unlimited.
 	MaxAccounts int `json:"max_accounts"`
@@ -96,6 +103,19 @@ func (s *Service) CreateEAB(ctx context.Context, in CreateEABInput) (*CreateEABR
 	}
 	profile = string(parsed)
 
+	domains, err := normalizeDomainPatterns(in.AllowedDomains)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case len(domains) == 0 && !in.AllowAnyDomain:
+		return nil, errors.New("no allowed domains given: accounts bootstrapped with this credential could " +
+			"obtain a certificate for any hostname, since goca's ACME performs no domain-control check. " +
+			"Restrict it (e.g. '*.cluster-a.internal'), or explicitly allow any domain")
+	case len(domains) > 0 && in.AllowAnyDomain:
+		return nil, errors.New("give allowed domains or allow any domain, not both")
+	}
+
 	var caID *int64
 	if ref := strings.TrimSpace(in.CARef); ref != "" {
 		ca, err := s.caSvc.ResolveCA(ctx, ref)
@@ -133,7 +153,7 @@ func (s *Service) CreateEAB(ctx context.Context, in CreateEABInput) (*CreateEABR
 		CAID:           caID,
 		Profile:        profile,
 		Days:           in.Days,
-		AllowedDomains: in.AllowedDomains,
+		AllowedDomains: domains,
 		MaxAccounts:    in.MaxAccounts,
 		ExpiresAt:      expires,
 		CreatedBy:      in.Actor,
@@ -143,7 +163,7 @@ func (s *Service) CreateEAB(ctx context.Context, in CreateEABInput) (*CreateEABR
 		return nil, err
 	}
 	s.audit(ctx, in.Actor, "acme.eab.create", name,
-		fmt.Sprintf("key_id=%s profile=%s domains=%v", keyID, profile, in.AllowedDomains))
+		fmt.Sprintf("key_id=%s profile=%s domains=%s", keyID, profile, describeDomains(domains)))
 	return &CreateEABResult{Cred: cred, HMACKeyB64: hmacB64}, nil
 }
 

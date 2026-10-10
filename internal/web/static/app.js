@@ -4,6 +4,20 @@
 (function () {
   "use strict";
 
+  // Marks the page as script-capable, so CSS can collapse the main nav behind
+  // a Menu button on narrow screens. Without this class (no JS) the nav simply
+  // wraps, as it always did, rather than becoming unreachable.
+  document.documentElement.classList.add("js");
+
+  var navToggle = document.querySelector("[data-nav-toggle]");
+  if (navToggle) {
+    navToggle.addEventListener("click", function () {
+      var bar = navToggle.closest(".topbar");
+      var open = bar.classList.toggle("nav-open");
+      navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
   // Copy-to-clipboard buttons for PEM blocks and secrets.
   document.addEventListener("click", function (ev) {
     var btn = ev.target.closest("[data-copy]");
@@ -35,13 +49,48 @@
     }
   });
 
-  // Destructive actions ask first.
+  // Destructive actions ask first - forms on submit, links on click.
+  //
+  // This must stay the ONLY way the portal asks for confirmation: the CSP
+  // (script-src 'self') silently blocks inline handlers such as
+  // onclick="return confirm(...)", so one of those simply never fires. That
+  // is how the CA private-key download once ran with no warning at all.
+  // web_test.go's TestTemplatesHaveNoInlineScript enforces it.
   document.addEventListener("submit", function (ev) {
     var form = ev.target;
     var msg = form.getAttribute("data-confirm");
     if (msg && !window.confirm(msg)) {
       ev.preventDefault();
     }
+  });
+  document.addEventListener("click", function (ev) {
+    var link = ev.target.closest("a[data-confirm]");
+    if (link && !window.confirm(link.getAttribute("data-confirm"))) {
+      ev.preventDefault();
+    }
+  });
+
+  // Show an element only while a control has a given value:
+  //   <div data-show-when="type=certificate"> ... </div>
+  // follows the form control named "type". Hidden sections also have their
+  // inputs disabled, for the same reason applyMode below does - a stale
+  // value from a hidden field must not be submitted.
+  document.querySelectorAll("[data-show-when]").forEach(function (el) {
+    var rule = el.getAttribute("data-show-when").split("=");
+    var form = el.closest("form") || document;
+    var controls = form.querySelectorAll("[name='" + rule[0] + "']");
+    var wanted = (rule[1] || "").split(" ");
+    function apply() {
+      var current = form.querySelector("[name='" + rule[0] + "']:checked") ||
+        form.querySelector("select[name='" + rule[0] + "'], input[name='" + rule[0] + "']");
+      var show = !!current && wanted.indexOf(current.value) !== -1;
+      el.hidden = !show;
+      el.querySelectorAll("input, select, textarea").forEach(function (input) {
+        input.disabled = !show;
+      });
+    }
+    controls.forEach(function (c) { c.addEventListener("change", apply); });
+    apply();
   });
 
   // Request form: switch between "generate a key for me" and "I have a CSR".

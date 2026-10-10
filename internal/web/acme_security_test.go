@@ -172,7 +172,7 @@ func TestEABProfileValidatedAtCreation(t *testing.T) {
 			t.Fatalf("profile %q: error %q, want it to mention %q", profile, err, want)
 		}
 	}
-	if _, err := svc.CreateEAB(context.Background(), acme.CreateEABInput{Name: "ok", Profile: "server-client", Actor: "t"}); err != nil {
+	if _, err := svc.CreateEAB(context.Background(), acme.CreateEABInput{Name: "ok", Profile: "server-client", AllowAnyDomain: true, Actor: "t"}); err != nil {
 		t.Fatalf("valid profile rejected: %v", err)
 	}
 }

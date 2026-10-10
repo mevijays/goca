@@ -4,6 +4,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -349,6 +350,56 @@ func verifierFromLegacyConfig(svc *ca.Service) (*k8sauth.Verifier, error) {
 type routeMux struct {
 	*http.ServeMux
 	patterns []string
+	// notFound renders goca's own 404 in place of net/http's bare
+	// "404 page not found" text. Nil leaves the default (routePatterns).
+	notFound http.HandlerFunc
+}
+
+// ServeHTTP replaces the mux's plain-text 404 with goca's error page (or JSON
+// error, for /api/ paths) while leaving everything else - including the
+// mux's own 405 Method Not Allowed - untouched.
+//
+// net/http reports "no route" and "wrong method" identically from Handler()
+// (an empty pattern), so the two can only be told apart by the status the
+// mux itself writes. When no pattern matches, only the mux's internal 404 or
+// 405 handler can run - no application code, no side effects - so it is
+// safe to let it answer into a buffer and then decide what to send.
+func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if _, pattern := m.ServeMux.Handler(r); pattern != "" || m.notFound == nil {
+		m.ServeMux.ServeHTTP(w, r)
+		return
+	}
+	buf := &bufferedResponse{header: http.Header{}}
+	m.ServeMux.ServeHTTP(buf, r)
+	if buf.status == http.StatusNotFound {
+		m.notFound(w, r)
+		return
+	}
+	for k, v := range buf.header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(buf.status)
+	_, _ = w.Write(buf.body.Bytes())
+}
+
+// bufferedResponse captures one response from the mux's internal handlers.
+type bufferedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (b *bufferedResponse) Header() http.Header { return b.header }
+func (b *bufferedResponse) Write(p []byte) (int, error) {
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	return b.body.Write(p)
+}
+func (b *bufferedResponse) WriteHeader(code int) {
+	if b.status == 0 {
+		b.status = code
+	}
 }
 
 func newRouteMux() *routeMux { return &routeMux{ServeMux: http.NewServeMux()} }
@@ -374,6 +425,10 @@ func (s *Server) routePatterns() []string {
 func (s *Server) Handler() http.Handler {
 	mux := newRouteMux()
 	s.routes(mux)
+	mux.notFound = func(w http.ResponseWriter, r *http.Request) {
+		s.renderError(w, r, http.StatusNotFound, "Page not found",
+			"Nothing lives at this address. It may have been mistyped, or the item it pointed to was removed.")
+	}
 	return s.recoverer(s.logRequests(securityHeaders(mux)))
 }
 
@@ -476,6 +531,9 @@ func (s *Server) routes(mux *routeMux) {
 	page("POST /certificates/{id}/hold", s.handleCertHold)
 	page("POST /certificates/{id}/release", s.handleCertRelease)
 	page("GET /certificates/{id}/download/{file}", s.handleCertDownload)
+	// The portal's PKCS#12 form posts its export password, so it never
+	// appears in a URL - see bundlePassword.
+	page("POST /certificates/{id}/download/{file}", s.handleCertDownload)
 	admin("POST /certificates/{id}/delete", s.handleCertDelete)
 
 	page("GET /tools/csr", s.handleCSRToolForm)
@@ -492,6 +550,10 @@ func (s *Server) routes(mux *routeMux) {
 	page("GET /settings", s.handleSettings)
 	page("POST /settings/password", s.handleChangePassword)
 	page("POST /settings/tokens", s.handleTokenCreate)
+	// The token/EAB reveal pages are rendered in the POST's own response (so
+	// the secret never enters a URL), which leaves the browser on these
+	// addresses; send a reload-by-URL back to the page instead of a 405.
+	page("GET /settings/tokens", redirectTo("/settings"))
 	page("POST /settings/tokens/{id}/revoke", s.handleTokenRevoke)
 	admin("POST /settings/users", s.handleUserCreate)
 	admin("POST /settings/users/{id}/role", s.handleUserRole)
@@ -502,6 +564,7 @@ func (s *Server) routes(mux *routeMux) {
 
 	admin("GET /settings/acme", s.handleACMESettings)
 	admin("POST /settings/acme/eab", s.handleACMEEABCreate)
+	admin("GET /settings/acme/eab", redirectTo("/settings/acme"))
 	admin("POST /settings/acme/eab/{id}/disable", s.handleACMEEABDisable)
 	admin("POST /settings/acme/eab/{id}/delete", s.handleACMEEABDelete)
 	admin("POST /settings/acme/accounts/{id}/deactivate", s.handleACMEAccountDeactivate)
@@ -920,4 +983,11 @@ func firstNonEmpty(vals ...string) string {
 func currentUser(r *http.Request) *store.User {
 	u, _ := r.Context().Value(ctxUser).(*store.User)
 	return u
+}
+
+// redirectTo answers with a 303 to a fixed path.
+func redirectTo(path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, path, http.StatusSeeOther)
+	}
 }

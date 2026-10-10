@@ -5,8 +5,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · goca</title>
-<link rel="stylesheet" href="/static/app.css">
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{asset "app.css"}}">
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
 </head>
 <body>
 {{/* The topbar (and with it the with-nav layout below) shows whenever there's
@@ -22,7 +22,10 @@
     <span class="brand-mark">CA</span>
     <span class="brand-text">goca</span>
   </a>
-  <nav class="mainnav">
+  {{if .User}}
+  <button class="navtoggle" type="button" aria-controls="mainnav" aria-expanded="false" data-nav-toggle>Menu</button>
+  {{end}}
+  <nav class="mainnav" id="mainnav">
     {{if .User}}
     <a href="/" class="{{if eq .Nav "dashboard"}}active{{end}}">Dashboard</a>
     <a href="/cas" class="{{if eq .Nav "cas"}}active{{end}}">Authorities</a>
@@ -70,6 +73,6 @@
   <a href="/api/v1/health">health</a>
 </footer>
 {{end}}
-<script src="/static/app.js"></script>
+<script src="{{asset "app.js"}}"></script>
 </body>
 </html>

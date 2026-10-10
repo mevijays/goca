@@ -50,8 +50,8 @@ func writeZip(w http.ResponseWriter, filename string, entries []zipEntry) {
 // logs, shell history and browser history. (goca's own request log is already
 // clear - logRequests records r.URL.Path, not RequestURI - so this is about
 // everything in front of and around it.) The header is what API clients should
-// use; the query parameter stays supported because the portal's existing
-// download links are built that way.
+// use, and the portal's form POSTs it. The query parameter is kept only so
+// existing third-party scripts don't break; nothing goca ships sends it.
 func bundlePassword(r *http.Request) string {
 	if pw := r.Header.Get("X-Bundle-Password"); pw != "" {
 		return pw

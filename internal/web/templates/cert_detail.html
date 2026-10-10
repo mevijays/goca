@@ -76,7 +76,8 @@
 
     {{if $c.HasKey}}
     <h3 style="margin-top:18px">PKCS#12 bundle</h3>
-    <form method="get" action="/certificates/{{$c.ID}}/download/bundle.p12">
+    <form method="post" action="/certificates/{{$c.ID}}/download/bundle.p12">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <div class="toolbar">
         <div class="field grow">
           <label for="p12pass">Export password</label>

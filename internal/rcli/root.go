@@ -30,7 +30,10 @@ import (
 // Build information, overridden with -ldflags at release time. Kept separate
 // from internal/cli's so the existing server ldflag paths keep working.
 var (
-	Version = "0.1.0"
+	// "dev" until -ldflags stamps a release. This used to default to "0.1.0",
+	// so every unstamped build - go run, go build, a local dev server - showed
+	// a real-looking release number in the portal footer and `version` output.
+	Version = "dev"
 	Commit  = ""
 	Date    = ""
 )

@@ -55,6 +55,11 @@ func acmeTestClient(t *testing.T, h *harness) (*xacme.Client, *httptest.Server) 
 func createTestEAB(t *testing.T, h *harness, in acme.CreateEABInput) *acme.CreateEABResult {
 	t.Helper()
 	svc := acme.New(h.svc)
+	if len(in.AllowedDomains) == 0 {
+		// Most tests here aren't about domain scope; an unrestricted
+		// credential now has to be asked for explicitly.
+		in.AllowAnyDomain = true
+	}
 	res, err := svc.CreateEAB(context.Background(), in)
 	if err != nil {
 		t.Fatalf("CreateEAB: %v", err)

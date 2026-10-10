@@ -4,7 +4,7 @@
     <h1>API reference</h1>
     <p class="subtitle">Every REST endpoint goca exposes, generated from the same route table the
        server itself runs. Everything here also exists in the CLI — see
-       <a href="https://github.com/mevijays/goca/blob/main/USAGE.md">USAGE.md</a>.</p>
+       <a href="https://mevijays.github.io/goca/usage/" rel="noopener">the usage guide</a>.</p>
   </div>
   <a class="btn secondary" href="/settings/api-docs/openapi.yaml">Download spec (.yaml)</a>
 </div>
@@ -17,12 +17,12 @@
   supply, so use a token for <span class="mono">POST</span>/<span class="mono">PATCH</span>/<span class="mono">DELETE</span> calls.
 </div>
 
-<link rel="stylesheet" href="/static/swagger/swagger-ui.css">
+<link rel="stylesheet" href="{{asset "swagger/swagger-ui.css"}}">
 <div class="card tight" style="padding:0">
   <div id="swagger-ui"></div>
 </div>
 
-<script src="/static/swagger/swagger-ui-bundle.js"></script>
-<script src="/static/swagger/swagger-ui-standalone-preset.js"></script>
-<script src="/static/api-docs-init.js"></script>
+<script src="{{asset "swagger/swagger-ui-bundle.js"}}"></script>
+<script src="{{asset "swagger/swagger-ui-standalone-preset.js"}}"></script>
+<script src="{{asset "api-docs-init.js"}}"></script>
 {{end}}
