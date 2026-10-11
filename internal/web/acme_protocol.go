@@ -42,9 +42,17 @@ func readACMEBody(r *http.Request) ([]byte, *acme.Problem) {
 
 // acmeNonce stamps a fresh Replay-Nonce on the response, as RFC 8555 §6.5
 // requires on every response to a POST (this server does it on error
-// responses too, which the spec only recommends but costs nothing extra).
-func (s *Server) acmeNonce(w http.ResponseWriter) {
-	w.Header().Set("Replay-Nonce", s.acme.NewNonce())
+// responses too, which the spec only recommends). If the shared nonce store
+// is unreachable the header is left off: the client then asks /new-nonce,
+// which reports the failure properly instead of handing out a nonce no
+// replica could ever redeem.
+func (s *Server) acmeNonce(w http.ResponseWriter, r *http.Request) {
+	n, err := s.acme.NewNonce(r.Context())
+	if err != nil {
+		s.log.Warn("acme: issue nonce", "error", err)
+		return
+	}
+	w.Header().Set("Replay-Nonce", n)
 }
 
 // acmeError writes an ACME problem document.
@@ -89,12 +97,18 @@ func pathIDACME(r *http.Request) (int64, *acme.Problem) {
 func (s *Server) handleACMEDirectory(w http.ResponseWriter, r *http.Request) {
 	// A nonce here is a convenience some clients rely on instead of a
 	// separate new-nonce round trip; RFC 8555 permits but does not require it.
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	s.acmeReply(w, http.StatusOK, s.acme.Directory(), "", nil)
 }
 
 func (s *Server) handleACMENewNonce(w http.ResponseWriter, r *http.Request) {
-	s.acmeNonce(w)
+	n, err := s.acme.NewNonce(r.Context())
+	if err != nil {
+		s.log.Warn("acme: issue nonce", "error", err)
+		s.acmeError(w, acme.ServerInternal("could not issue a nonce; try again"))
+		return
+	}
+	w.Header().Set("Replay-Nonce", n)
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
@@ -110,12 +124,12 @@ func (s *Server) handleACMENewNonce(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMENewAccount(w http.ResponseWriter, r *http.Request) {
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	account, obj, created, perr := s.acme.NewAccount(r.Context(), body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -130,18 +144,18 @@ func (s *Server) handleACMENewAccount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMEAccount(w http.ResponseWriter, r *http.Request) {
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	obj, perr := s.acme.GetAccount(r.Context(), id, body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -156,12 +170,12 @@ func (s *Server) handleACMEAccount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	order, obj, perr := s.acme.NewOrder(r.Context(), body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -172,18 +186,18 @@ func (s *Server) handleACMENewOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMEOrder(w http.ResponseWriter, r *http.Request) {
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	obj, perr := s.acme.GetOrder(r.Context(), id, body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -194,18 +208,18 @@ func (s *Server) handleACMEOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMEFinalize(w http.ResponseWriter, r *http.Request) {
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	obj, perr := s.acme.Finalize(r.Context(), id, body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -220,18 +234,18 @@ func (s *Server) handleACMEFinalize(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMEAuthz(w http.ResponseWriter, r *http.Request) {
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	obj, perr := s.acme.GetAuthorization(r.Context(), id, body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -242,18 +256,18 @@ func (s *Server) handleACMEAuthz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	obj, perr := s.acme.GetChallenge(r.Context(), id, body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -272,18 +286,18 @@ func (s *Server) handleACMECert(w http.ResponseWriter, r *http.Request) {
 	// and an unauthenticated GET let anyone walk goca's entire inventory.
 	id, perr := pathIDACME(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	chain, perr := s.acme.GetCertificatePEM(r.Context(), id, body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return
@@ -296,12 +310,12 @@ func (s *Server) handleACMECert(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACMERevokeCert(w http.ResponseWriter, r *http.Request) {
 	body, perr := readACMEBody(r)
 	if perr != nil {
-		s.acmeNonce(w)
+		s.acmeNonce(w, r)
 		s.acmeError(w, perr)
 		return
 	}
 	perr = s.acme.RevokeCert(r.Context(), body)
-	s.acmeNonce(w)
+	s.acmeNonce(w, r)
 	if perr != nil {
 		s.acmeError(w, perr)
 		return

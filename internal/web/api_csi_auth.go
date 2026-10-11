@@ -2,8 +2,13 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/http"
 
+	"github.com/mevijays/goca/internal/k8sauth"
 	"github.com/mevijays/goca/internal/secret"
 	"github.com/mevijays/goca/internal/store"
 )
@@ -72,22 +77,73 @@ func (s *Server) encryptReviewerToken(token string) (string, error) {
 
 // refreshK8sRegistry reloads the named trust domain's Verifier into the
 // registry after a row change, or drops it when the row is gone or disabled.
+// It only updates this process's cache; other replicas pick the change up on
+// their next request through verifierFor.
 func (s *Server) refreshK8sRegistry(ctx context.Context, name string) {
 	if s.k8s == nil {
 		return
 	}
+	_, _ = s.verifierFor(ctx, name)
+}
+
+// legacyConfigFingerprint marks the Verifier built from the legacy csi.*
+// config block, which has no row - it comes from the config file every
+// replica shares, so it can't drift between them.
+const legacyConfigFingerprint = "legacy-csi-config"
+
+// k8sRowFingerprint identifies everything a Verifier is built from, so a
+// change to any of it - on any replica - forces a rebuild.
+func k8sRowFingerprint(m *store.K8sAuthMethod) string {
+	h := sha256.New()
+	for _, f := range []string{m.Audience, m.IssuerURL, m.APIServerURL, m.CACert, m.ReviewerTokenEnc,
+		fmt.Sprint(m.InsecureSkipVerify)} {
+		h.Write([]byte(f))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// verifierFor returns the Verifier for a trust domain, consistent with the
+// shared database rather than with whatever this process last cached.
+//
+// It re-reads the k8s_auth_methods row on every Kubernetes-authenticated
+// request (one indexed lookup, next to the binding lookups those requests do
+// anyway) and rebuilds the cached Verifier only when the row's fingerprint
+// changed. That is what makes a disable, edit or delete on one replica take
+// effect on all of them at once - previously only the replica that served the
+// change refreshed its cache, and the others kept accepting the old settings,
+// including a disabled domain, until restarted.
+//
+// ok=false with a nil error means "no such enabled trust domain"; a non-nil
+// error means the database could not be read.
+func (s *Server) verifierFor(ctx context.Context, name string) (v *k8sauth.Verifier, err error) {
 	row, err := s.svc.Store().GetK8sAuthMethodByName(ctx, name)
-	if err != nil || row.Disabled {
+	switch {
+	case err == nil && row.Disabled:
 		s.k8s.Remove(name)
-		return
-	}
-	v, err := verifierFromRow(s.svc, row)
-	if err != nil {
-		s.log.Error("rebuild k8s auth method verifier", "name", name, "error", err)
+		return nil, nil
+	case err == nil:
+		fp := k8sRowFingerprint(row)
+		if cached, cachedFP, ok := s.k8s.GetWithFingerprint(name); ok && cachedFP == fp {
+			return cached, nil
+		}
+		built, err := verifierFromRow(s.svc, row)
+		if err != nil {
+			s.log.Error("rebuild k8s auth method verifier", "name", name, "error", err)
+			s.k8s.Remove(name)
+			return nil, nil
+		}
+		s.k8s.SetWithFingerprint(name, built, fp)
+		return built, nil
+	case errors.Is(err, store.ErrNotFound):
+		if cached, fp, ok := s.k8s.GetWithFingerprint(name); ok && fp == legacyConfigFingerprint {
+			return cached, nil
+		}
 		s.k8s.Remove(name)
-		return
+		return nil, nil
+	default:
+		return nil, err
 	}
-	s.k8s.Set(name, v)
 }
 
 func (s *Server) apiCsiAuthMethodList(w http.ResponseWriter, r *http.Request) error {

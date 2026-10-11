@@ -65,7 +65,7 @@ func (s *Server) apiAuthLogin(w http.ResponseWriter, r *http.Request) error {
 			"sign in to the portal with SSO and create an API token under Settings instead"}
 	}
 
-	if wait := s.loginThrottle(username, ip); wait > 0 {
+	if wait := s.loginThrottle(r.Context(), username, ip); wait > 0 {
 		secs := int(wait.Seconds()) + 1
 		w.Header().Set("Retry-After", fmt.Sprint(secs))
 		s.svc.AuditWithIP(r.Context(), username, "auth.login_throttled", username, "via=api", ip)
@@ -80,7 +80,7 @@ func (s *Server) apiAuthLogin(w http.ResponseWriter, r *http.Request) error {
 
 	u, err := s.auth.Authenticate(r.Context(), username, in.Password)
 	if err != nil {
-		s.loginFailed(username, ip)
+		s.loginFailed(r.Context(), username, ip)
 		s.log.Warn("api login failed", "user", username, "remote", ip, "error", err)
 		s.svc.AuditWithIP(r.Context(), username, "auth.login_failed", username, "via=api "+err.Error(), ip)
 		switch {
@@ -96,7 +96,7 @@ func (s *Server) apiAuthLogin(w http.ResponseWriter, r *http.Request) error {
 			return &apiError{Status: http.StatusBadGateway, Msg: "the directory could not be reached", Err: err}
 		}
 	}
-	s.loginSucceeded(username, ip)
+	s.loginSucceeded(r.Context(), username, ip)
 
 	name := strings.TrimSpace(in.TokenName)
 	if name == "" {

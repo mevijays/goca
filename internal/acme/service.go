@@ -44,7 +44,7 @@ type Service struct {
 
 // New builds an ACME service bound to an existing certificate service.
 func New(caSvc *ca.Service) *Service {
-	return &Service{caSvc: caSvc, st: caSvc.Store(), nonces: NewNonceManager()}
+	return &Service{caSvc: caSvc, st: caSvc.Store(), nonces: NewNonceManager(caSvc.Store())}
 }
 
 func (s *Service) audit(ctx context.Context, actor, action, target, detail string) {
@@ -107,7 +107,10 @@ func (s *Service) Directory() Directory {
 }
 
 // NewNonce issues a fresh replay nonce.
-func (s *Service) NewNonce() string { return s.nonces.New() }
+func (s *Service) NewNonce(ctx context.Context) (string, error) { return s.nonces.New(ctx) }
+
+// PurgeNonces drops expired, unredeemed nonces (see NonceManager.Purge).
+func (s *Service) PurgeNonces(ctx context.Context) (int64, error) { return s.nonces.Purge(ctx) }
 
 // checkURL enforces RFC 8555 §6.4: a JWS's "url" header must equal the URL
 // the server itself expects for this operation, not merely be well-formed.
@@ -118,8 +121,8 @@ func (s *Service) checkURL(jws *ParsedJWS, want string) *Problem {
 	return nil
 }
 
-func (s *Service) checkNonce(jws *ParsedJWS) *Problem {
-	if !s.nonces.Consume(jws.Nonce) {
+func (s *Service) checkNonce(ctx context.Context, jws *ParsedJWS) *Problem {
+	if !s.nonces.Consume(ctx, jws.Nonce) {
 		return BadNonce("the nonce was missing, unknown, or already used")
 	}
 	return nil
@@ -146,7 +149,7 @@ func (s *Service) NewAccount(ctx context.Context, body []byte) (*store.AcmeAccou
 	if pr := s.checkURL(jws, s.newAccountURL()); pr != nil {
 		return nil, nil, false, pr
 	}
-	if pr := s.checkNonce(jws); pr != nil {
+	if pr := s.checkNonce(ctx, jws); pr != nil {
 		return nil, nil, false, pr
 	}
 	if jws.JWK == nil {
@@ -291,7 +294,7 @@ func (s *Service) authenticate(ctx context.Context, body []byte, expectedURL str
 	if pr := s.checkURL(jws, expectedURL); pr != nil {
 		return nil, pr
 	}
-	if pr := s.checkNonce(jws); pr != nil {
+	if pr := s.checkNonce(ctx, jws); pr != nil {
 		return nil, pr
 	}
 	if jws.KeyID == "" {
@@ -844,7 +847,7 @@ func (s *Service) RevokeCert(ctx context.Context, body []byte) *Problem {
 	if pr := s.checkURL(jws, s.revokeCertURL()); pr != nil {
 		return pr
 	}
-	if pr := s.checkNonce(jws); pr != nil {
+	if pr := s.checkNonce(ctx, jws); pr != nil {
 		return pr
 	}
 

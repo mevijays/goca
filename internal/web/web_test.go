@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,8 @@ import (
 	"github.com/mevijays/goca/internal/config"
 	"github.com/mevijays/goca/internal/pki"
 	"github.com/mevijays/goca/internal/store"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const testAdminPassword = "TestPassw0rd!"
@@ -58,11 +62,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := openHarnessStore(t, cfg.DBPath)
 
 	svc, err := ca.New(cfg, st)
 	if err != nil {
@@ -1265,4 +1265,52 @@ func TestEnablingCSIWithoutTokenVerificationExplainsWhichKeysToSet(t *testing.T)
 	if v, err := legacyCSIVerifier(h.svc); err != nil || v != nil {
 		t.Errorf("csi.enabled=false should yield (nil, nil); got (%v, %v)", v, err)
 	}
+}
+
+// openHarnessStore opens the harness database: SQLite by default, or - when
+// GOCA_TEST_PG_HOST is set - a brand-new PostgreSQL database per test, so the
+// whole web suite (ACME, CSI, the multi-replica tests) can run against the
+// backend a clustered deployment actually uses:
+//
+//	GOCA_TEST_PG_HOST=127.0.0.1 GOCA_TEST_PG_PORT=5432 GOCA_TEST_PG_USER=postgres \
+//	GOCA_TEST_PG_PASSWORD=... GOCA_TEST_PG_DB=postgres go test ./internal/web/
+func openHarnessStore(t *testing.T, sqlitePath string) *store.Store {
+	t.Helper()
+	host := os.Getenv("GOCA_TEST_PG_HOST")
+	if host == "" {
+		st, err := store.Open(sqlitePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { st.Close() })
+		return st
+	}
+	port, _ := strconv.Atoi(os.Getenv("GOCA_TEST_PG_PORT"))
+	p := store.PostgresParams{Host: host, Port: port, SSLMode: "disable",
+		User: os.Getenv("GOCA_TEST_PG_USER"), Password: os.Getenv("GOCA_TEST_PG_PASSWORD"),
+		Name: os.Getenv("GOCA_TEST_PG_DB")}
+	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		url.QueryEscape(p.User), url.QueryEscape(p.Password), p.Host, p.Port, p.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	name := fmt.Sprintf("goca_web_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE DATABASE ` + name); err != nil {
+		t.Fatal(err)
+	}
+	p.Name = name
+	st, err := store.OpenPostgres(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		st.Close()
+		if a, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+			url.QueryEscape(p.User), url.QueryEscape(p.Password), p.Host, p.Port, os.Getenv("GOCA_TEST_PG_DB"))); err == nil {
+			_, _ = a.Exec(`DROP DATABASE IF EXISTS ` + name + ` WITH (FORCE)`)
+			a.Close()
+		}
+	})
+	return st
 }

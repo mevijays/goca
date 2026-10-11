@@ -22,6 +22,9 @@ var ErrNotFound = errors.New("not found")
 type Store struct {
 	db   *sql.DB
 	path string
+	// postgres is set for the PostgreSQL backend, for the few queries that
+	// need a dialect-specific clause (see ClaimDueWebhookDeliveries).
+	postgres bool
 }
 
 const schema = `
@@ -198,6 +201,23 @@ CREATE TABLE IF NOT EXISTS acme_orders (
   created_at       TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id);
+
+-- ACME replay nonces, shared by every replica: a nonce handed out by one
+-- goca process must be redeemable at another behind the same Service.
+CREATE TABLE IF NOT EXISTS acme_nonces (
+  nonce      TEXT PRIMARY KEY,
+  expires_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acme_nonces_expires ON acme_nonces(expires_at);
+
+-- Failed sign-in attempts, for throttling across replicas (see
+-- internal/web/ratelimit.go). One row per failure; old rows are purged.
+CREATE TABLE IF NOT EXISTS auth_failures (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT NOT NULL,
+  at         TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_failures_key_at ON auth_failures(key, at);
 
 CREATE TABLE IF NOT EXISTS acme_authorizations (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -512,6 +532,19 @@ CREATE TABLE IF NOT EXISTS acme_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id);
 
+CREATE TABLE IF NOT EXISTS acme_nonces (
+  nonce      TEXT PRIMARY KEY,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_acme_nonces_expires ON acme_nonces(expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_failures (
+  id         BIGSERIAL PRIMARY KEY,
+  key        TEXT NOT NULL,
+  at         TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_failures_key_at ON auth_failures(key, at);
+
 CREATE TABLE IF NOT EXISTS acme_authorizations (
   id               BIGSERIAL PRIMARY KEY,
   order_id         BIGINT NOT NULL REFERENCES acme_orders(id) ON DELETE CASCADE,
@@ -751,16 +784,12 @@ func OpenPostgres(p PostgresParams) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("open database %s:%d/%s: %w", p.Host, p.Port, p.Name, err)
 	}
-	if err := execStatements(db, schemaPostgres); err != nil {
+	if err := applyPostgresSchema(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	if err := migratePostgres(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate database: %w", err)
+		return nil, err
 	}
 	summary := fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=%s", p.User, p.Host, p.Port, p.Name, p.SSLMode)
-	return &Store{db: db, path: summary}, nil
+	return &Store{db: db, path: summary, postgres: true}, nil
 }
 
 // postgresDSN builds a libpq keyword/value connection string, quoting every
@@ -780,13 +809,19 @@ func postgresDSN(p PostgresParams) string {
 // The schema has no semicolons inside string literals, so a plain split is
 // safe, and it sidesteps any ambiguity in whether the driver's query-exec
 // mode of the moment supports multiple statements in one call.
-func execStatements(db *sql.DB, schema string) error {
+// execer is satisfied by *sql.DB and by the single *sql.Conn schema setup
+// holds its advisory lock on (see OpenPostgres).
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func execStatements(db execer, schema string) error {
 	for _, stmt := range strings.Split(schema, ";") {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
 		}
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
 			return fmt.Errorf("%s: %w", firstLine(stmt), err)
 		}
 	}
@@ -800,18 +835,52 @@ func firstLine(s string) string {
 	return s
 }
 
+// schemaLockKey is the PostgreSQL advisory-lock key goca's schema setup
+// serializes on: an arbitrary constant, unique to goca within the database.
+const schemaLockKey int64 = 0x676f6361_5343484d // "gocaSCHM"
+
+// applyPostgresSchema creates and migrates the schema while holding a
+// session-level advisory lock, so replicas starting at the same moment - a
+// rollout, a scale-up, a first install - take turns instead of racing.
+// PostgreSQL's CREATE TABLE IF NOT EXISTS is not safe against itself: two
+// sessions can both find a table missing, and the second then fails on the
+// system catalog's unique index ("duplicate key value violates unique
+// constraint") or with "relation already exists". Measured: 25 of 30 replica
+// starts failed across five rollouts of six replicas against a fresh database
+// (TestConcurrentOpenOnFreshPostgres). The lock is session-scoped, so it is
+// taken on one dedicated connection, not the pool.
+func applyPostgresSchema(db *sql.DB) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(?)`, schemaLockKey); err != nil {
+		return fmt.Errorf("apply schema: take schema lock: %w", err)
+	}
+	defer conn.ExecContext(ctx, `SELECT pg_advisory_unlock(?)`, schemaLockKey) //nolint:errcheck // released with the session anyway
+	if err := execStatements(conn, schemaPostgres); err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	if err := migratePostgres(conn); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+	return nil
+}
+
 // migratePostgres brings an existing PostgreSQL database up to the current
 // schema. Unlike SQLite, PostgreSQL supports "ADD COLUMN IF NOT EXISTS"
 // natively, so this reuses the same addedColumns table without needing a
 // separate existence check.
-func migratePostgres(db *sql.DB) error {
+func migratePostgres(db execer) error {
 	for _, c := range addedColumns {
 		ddl := c.ddl
 		if c.pgDDL != "" {
 			ddl = c.pgDDL
 		}
 		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s", c.table, c.column, ddl)
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
 			return fmt.Errorf("add %s.%s: %w", c.table, c.column, err)
 		}
 	}
@@ -1026,22 +1095,21 @@ func (s *Store) SetCAStatus(ctx context.Context, id int64, status string) error 
 }
 
 // NextCRLNumber increments and returns the CRL counter for a CA.
+//
+// One statement, so the increment is atomic. It used to SELECT the counter
+// and UPDATE it to n+1 inside a transaction, which under PostgreSQL's default
+// READ COMMITTED lets two replicas both read n and both publish CRL number
+// n+1 for different CRLs - RFC 5280 §5.2.3 requires the number to increase
+// strictly, and relying parties use it to discard stale CRLs.
 func (s *Store) NextCRLNumber(ctx context.Context, caID int64) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	var n int64
-	if err := tx.QueryRowContext(ctx, `SELECT crl_number FROM cas WHERE id = ?`, caID).Scan(&n); err != nil {
-		return 0, err
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE cas SET crl_number = crl_number + 1, last_crl_at = ? WHERE id = ? RETURNING crl_number`,
+		time.Now().UTC(), caID).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
 	}
-	n++
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE cas SET crl_number = ?, last_crl_at = ? WHERE id = ?`, n, time.Now().UTC(), caID); err != nil {
-		return 0, err
-	}
-	return n, tx.Commit()
+	return n, err
 }
 
 // CompleteCA fills in the certificate of a pending subordinate CA once the
@@ -1887,4 +1955,50 @@ func prefixCols(cols, prefix string) string {
 		parts[i] = prefix + strings.TrimSpace(p)
 	}
 	return strings.Join(parts, ", ")
+}
+
+//
+// ---------- sign-in throttling ----------
+//
+
+// RecordAuthFailure records one failed sign-in attempt against key (e.g.
+// "user:alice" or "ip:10.0.0.5").
+func (s *Store) RecordAuthFailure(ctx context.Context, key string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_failures (key, at) VALUES (?, ?)`, key, at.UTC())
+	return err
+}
+
+// RecentAuthFailures returns up to limit failure times for key after since,
+// oldest first.
+func (s *Store) RecentAuthFailures(ctx context.Context, key string, since time.Time, limit int) ([]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT at FROM auth_failures WHERE key = ? AND at > ? ORDER BY at ASC LIMIT ?`, key, since.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []time.Time
+	for rows.Next() {
+		var t time.Time
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ClearAuthFailures forgets every recorded failure for key.
+func (s *Store) ClearAuthFailures(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_failures WHERE key = ?`, key)
+	return err
+}
+
+// PurgeAuthFailures drops failures older than before.
+func (s *Store) PurgeAuthFailures(ctx context.Context, before time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM auth_failures WHERE at <= ?`, before.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

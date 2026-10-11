@@ -211,7 +211,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// Throttled on the same counters as the API login endpoint, so an
 	// attacker cannot sidestep the limit by switching between the two.
-	if wait := s.loginThrottle(username, s.clientIP(r)); wait > 0 {
+	if wait := s.loginThrottle(r.Context(), username, s.clientIP(r)); wait > 0 {
 		s.svc.AuditWithIP(r.Context(), username, "auth.login_throttled", username, "via=form", s.clientIP(r))
 		s.renderLogin(w, r, fmt.Sprintf(
 			"Too many failed sign-in attempts. Please try again in %d seconds.", int(wait.Seconds())+1), next)
@@ -220,7 +220,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	u, err := s.auth.Authenticate(r.Context(), username, password)
 	if err != nil {
-		s.loginFailed(username, s.clientIP(r))
+		s.loginFailed(r.Context(), username, s.clientIP(r))
 		msg := "Invalid username or password."
 		switch {
 		case errors.Is(err, auth.ErrDisabled):
@@ -235,7 +235,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, r, msg, next)
 		return
 	}
-	s.loginSucceeded(username, s.clientIP(r))
+	s.loginSucceeded(r.Context(), username, s.clientIP(r))
 
 	s.finishLogin(w, r, u, next)
 }

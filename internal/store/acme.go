@@ -710,3 +710,36 @@ func decodeIdentifiers(s string) []AcmeIdentifier {
 	}
 	return out
 }
+
+//
+// ---------- ACME nonces ----------
+//
+
+// CreateAcmeNonce records a newly issued replay nonce.
+func (s *Store) CreateAcmeNonce(ctx context.Context, nonce string, expires time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO acme_nonces (nonce, expires_at) VALUES (?, ?)`,
+		nonce, expires.UTC())
+	return err
+}
+
+// ConsumeAcmeNonce redeems a nonce exactly once: it reports true only to the
+// single caller whose DELETE removed an unexpired row, however many replicas
+// race to redeem the same value.
+func (s *Store) ConsumeAcmeNonce(ctx context.Context, nonce string, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM acme_nonces WHERE nonce = ? AND expires_at > ?`,
+		nonce, now.UTC())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// PurgeExpiredAcmeNonces drops nonces nobody redeemed before they expired.
+func (s *Store) PurgeExpiredAcmeNonces(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM acme_nonces WHERE expires_at <= ?`, now.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

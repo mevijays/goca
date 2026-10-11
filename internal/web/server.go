@@ -93,7 +93,7 @@ func NewServer(svc *ca.Service, mgr *auth.Manager, logger *slog.Logger) (*Server
 	// durable delivery rows here; a worker in Run performs the HTTP calls.
 	dispatcher := webhooks.New(svc.Store(), svc.Box(), logger, webhooks.Options{})
 	svc.SetEventSink(dispatcher.Emit)
-	s := &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s, logins: newFailCounter(), webhooks: dispatcher}
+	s := &Server{svc: svc, auth: mgr, cfg: svc.Config(), log: logger, tpl: tpl, acme: acme.New(svc), vault: vSvc, k8s: k8s, logins: newFailCounter(svc.Store()), webhooks: dispatcher}
 	s.trustedProxies = parseTrustedProxies(s.cfg.Server.TrustedProxies)
 	s.logSecurityWarnings()
 	return s, nil
@@ -177,7 +177,7 @@ func buildK8sRegistry(svc *ca.Service) (*k8sauth.Registry, error) {
 		if err != nil {
 			return nil, err
 		}
-		reg.Set(row.Name, v)
+		reg.SetWithFingerprint(row.Name, v, k8sRowFingerprint(row))
 	}
 	if reg.Len() == 0 {
 		v, err := legacyCSIVerifier(svc)
@@ -185,7 +185,7 @@ func buildK8sRegistry(svc *ca.Service) (*k8sauth.Registry, error) {
 			return nil, err
 		}
 		if v != nil {
-			reg.Set("default", v)
+			reg.SetWithFingerprint("default", v, legacyConfigFingerprint)
 		}
 	}
 	return reg, nil
@@ -762,8 +762,8 @@ func (s *Server) Run(ctx context.Context, opts Options) error {
 		errCh <- nil
 	}()
 
-	// Housekeeping: drop expired sessions once an hour.
-	go s.sessionJanitor(ctx)
+	// Housekeeping: drop expired sessions, nonces and sign-in failures.
+	go s.janitor(ctx)
 
 	// G9: deliver queued webhook events.
 	go s.webhooks.Run(ctx)
@@ -779,7 +779,12 @@ func (s *Server) Run(ctx context.Context, opts Options) error {
 	}
 }
 
-func (s *Server) sessionJanitor(ctx context.Context) {
+// janitor deletes rows that can no longer matter, once an hour. Every replica
+// runs it and needs no coordination: each purge is an idempotent DELETE of
+// already-expired rows, so two replicas purging at once simply find less to
+// delete - unlike work that must happen exactly once (webhook delivery),
+// which claims its rows instead.
+func (s *Server) janitor(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	for {
@@ -787,9 +792,24 @@ func (s *Server) sessionJanitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := s.svc.Store().PurgeExpiredSessions(ctx); err == nil && n > 0 {
-				s.log.Debug("purged expired sessions", "count", n)
-			}
+			s.purgeExpired(ctx)
+		}
+	}
+}
+
+func (s *Server) purgeExpired(ctx context.Context) {
+	for _, p := range []struct {
+		what string
+		fn   func(context.Context) (int64, error)
+	}{
+		{"sessions", s.svc.Store().PurgeExpiredSessions},
+		{"acme nonces", s.acme.PurgeNonces},
+		{"sign-in failures", s.logins.Purge},
+	} {
+		if n, err := p.fn(ctx); err != nil {
+			s.log.Warn("janitor: purge failed", "what", p.what, "error", err)
+		} else if n > 0 {
+			s.log.Debug("janitor: purged", "what", p.what, "count", n)
 		}
 	}
 }

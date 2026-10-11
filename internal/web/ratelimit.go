@@ -1,8 +1,10 @@
 package web
 
 import (
-	"sync"
+	"context"
 	"time"
+
+	"github.com/mevijays/goca/internal/store"
 )
 
 // Throttling for the endpoints that check a credential. Before the API login
@@ -10,12 +12,12 @@ import (
 // is awkward to script against; a JSON endpoint that returns a token is a
 // much more convenient password oracle, so both are throttled here.
 //
-// This is in-process and in-memory, the same choice internal/acme's nonce
-// store makes and for the same reason: goca is a single-process server, and a
-// shared-state limiter would need infrastructure the project deliberately
-// does not have. A restart clears the counters, which is an accepted
-// trade-off - an attacker cannot trigger a restart, and an operator restarting
-// to clear a lockout is a feature.
+// Failures are recorded in the shared database, not in process memory. With
+// several goca replicas behind one Service, per-process counters would let an
+// attacker make loginFailLimit guesses against EACH pod per window - and a
+// load balancer spreads them across pods for free. Counting in the database
+// makes the limit hold for the deployment as a whole. Old rows are purged by
+// the server's janitor (see Server.janitor).
 
 const (
 	// loginFailLimit is how many failures a key may accumulate inside
@@ -24,121 +26,64 @@ const (
 	// loginFailWindow is the sliding window failures are counted over, and
 	// also how long a tripped key stays refused.
 	loginFailWindow = 15 * time.Minute
-	// maxFailKeys bounds the map so an attacker rotating usernames cannot
-	// grow it without limit. Past this, the oldest entries are dropped.
-	maxFailKeys = 10000
 )
 
-// failCounter counts recent authentication failures per key.
+// failCounter counts recent authentication failures per key, across every
+// replica sharing the database.
 type failCounter struct {
-	mu   sync.Mutex
-	hits map[string][]time.Time
+	st *store.Store
 }
 
-func newFailCounter() *failCounter {
-	return &failCounter{hits: make(map[string][]time.Time)}
-}
+func newFailCounter(st *store.Store) *failCounter { return &failCounter{st: st} }
 
-// retryAfter reports how long a key must wait, or 0 when it may proceed. It
-// does not record anything - call Fail for that.
-func (f *failCounter) retryAfter(key string) time.Duration {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	recent := f.recentLocked(key, time.Now())
-	if len(recent) < loginFailLimit {
+// retryAfter reports how long key must wait before its next attempt, or 0.
+//
+// A database error fails open: the credential check that follows needs the
+// same database and will fail on its own, so refusing here would only add a
+// misleading "too many attempts" to an outage.
+func (f *failCounter) retryAfter(ctx context.Context, key string) time.Duration {
+	now := time.Now()
+	recent, err := f.st.RecentAuthFailures(ctx, key, now.Add(-loginFailWindow), loginFailLimit)
+	if err != nil || len(recent) < loginFailLimit {
 		return 0
 	}
-	// Refuse until the oldest failure in the window ages out.
-	return time.Until(recent[0].Add(loginFailWindow))
-}
-
-// Fail records one failed attempt against a key.
-func (f *failCounter) Fail(key string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	now := time.Now()
-	f.hits[key] = append(f.recentLocked(key, now), now)
-	f.evictLocked(now)
-}
-
-// Reset clears a key after a success.
-func (f *failCounter) Reset(key string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.hits, key)
-}
-
-// recentLocked returns key's failures still inside the window.
-func (f *failCounter) recentLocked(key string, now time.Time) []time.Time {
-	cutoff := now.Add(-loginFailWindow)
-	hits := f.hits[key]
-	i := 0
-	for ; i < len(hits); i++ {
-		if hits[i].After(cutoff) {
-			break
-		}
-	}
-	if i > 0 {
-		hits = hits[i:]
-		if len(hits) == 0 {
-			delete(f.hits, key)
-		} else {
-			f.hits[key] = hits
-		}
-	}
-	return hits
-}
-
-// evictLocked keeps the map bounded. It first drops keys whose failures have
-// all aged out, and only if that is not enough drops arbitrary keys - which is
-// safe, since forgetting a key can only ever be more permissive, never less.
-func (f *failCounter) evictLocked(now time.Time) {
-	if len(f.hits) <= maxFailKeys {
-		return
-	}
-	cutoff := now.Add(-loginFailWindow)
-	for k, hits := range f.hits {
-		if len(hits) == 0 || !hits[len(hits)-1].After(cutoff) {
-			delete(f.hits, k)
-		}
-	}
-	for k := range f.hits {
-		if len(f.hits) <= maxFailKeys {
-			break
-		}
-		delete(f.hits, k)
-	}
-}
-
-// loginThrottle checks both the username and the client address before a
-// credential is tested. They are counted separately on purpose: per-username
-// stops one account being ground down from many hosts, per-IP stops one host
-// spraying many usernames. Returns the wait, or 0 to proceed.
-func (s *Server) loginThrottle(username, ip string) time.Duration {
-	if wait := s.logins.retryAfter("user:" + username); wait > 0 {
+	if wait := recent[0].Add(loginFailWindow).Sub(now); wait > 0 {
 		return wait
 	}
-	return s.logins.retryAfter("ip:" + ip)
+	return 0
 }
 
-// loginFailed records a failure against both keys.
-func (s *Server) loginFailed(username, ip string) {
-	s.logins.Fail("user:" + username)
-	s.logins.Fail("ip:" + ip)
+// Fail records one failure for key.
+func (f *failCounter) Fail(ctx context.Context, key string) {
+	_ = f.st.RecordAuthFailure(ctx, key, time.Now())
 }
 
-// loginSucceeded clears both counters after a correct password.
-//
-// Clearing the per-IP counter is a deliberate trade-off. Not clearing it locks
-// out anyone who mistypes a few times, signs in correctly, then mistypes once
-// more - and it is worse behind NAT, where one person's fumbling would spend
-// a whole office's budget. Against that, an attacker who already holds one
-// valid account could sign into it to reset their own per-IP budget. That
-// costs little: the per-username counter is what actually protects a targeted
-// account, it is never reset by somebody else's success, and an attacker with
-// no valid account - the case per-IP throttling exists for - never succeeds
-// and so never resets anything.
-func (s *Server) loginSucceeded(username, ip string) {
-	s.logins.Reset("user:" + username)
-	s.logins.Reset("ip:" + ip)
+// Reset forgets key's failures (after a successful sign-in).
+func (f *failCounter) Reset(ctx context.Context, key string) {
+	_ = f.st.ClearAuthFailures(ctx, key)
+}
+
+// Purge drops failures that no longer count towards any window.
+func (f *failCounter) Purge(ctx context.Context) (int64, error) {
+	return f.st.PurgeAuthFailures(ctx, time.Now().Add(-loginFailWindow))
+}
+
+// loginThrottle reports how long a sign-in for username from ip must wait.
+// Both keys are checked so neither rotating usernames from one address nor
+// spreading one username across addresses gets past the limit.
+func (s *Server) loginThrottle(ctx context.Context, username, ip string) time.Duration {
+	if wait := s.logins.retryAfter(ctx, "user:"+username); wait > 0 {
+		return wait
+	}
+	return s.logins.retryAfter(ctx, "ip:"+ip)
+}
+
+func (s *Server) loginFailed(ctx context.Context, username, ip string) {
+	s.logins.Fail(ctx, "user:"+username)
+	s.logins.Fail(ctx, "ip:"+ip)
+}
+
+func (s *Server) loginSucceeded(ctx context.Context, username, ip string) {
+	s.logins.Reset(ctx, "user:"+username)
+	s.logins.Reset(ctx, "ip:"+ip)
 }

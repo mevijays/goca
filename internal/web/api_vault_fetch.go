@@ -40,8 +40,15 @@ func (s *Server) apiAuthK8s(h apiHandler) http.Handler {
 		if method == "" {
 			method = "default"
 		}
-		verifier, ok := s.k8s.Get(method)
-		if !ok {
+		verifier, err := s.verifierFor(r.Context(), method)
+		if err != nil {
+			s.log.Error("k8s auth: look up trust domain", "name", method, "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "could not look up the CSI trust domain; try again",
+			})
+			return
+		}
+		if verifier == nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
 				"error": "unknown CSI trust domain " + method + ": no such k8s auth method is configured on this server",
 			})

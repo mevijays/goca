@@ -205,14 +205,21 @@ func (s *Store) CreateSecretVersion(ctx context.Context, secretID int64, content
 	}
 	defer tx.Rollback()
 
-	var current int
-	if err := tx.QueryRowContext(ctx, `SELECT current_version FROM secrets WHERE id = ?`, secretID).Scan(&current); err != nil {
+	// Reserve the version number by incrementing in place. The row lock this
+	// takes is held to commit, so a concurrent writer for the same secret -
+	// another replica - waits and then gets the next number. Reading
+	// current_version and writing current+1 separately let both read the
+	// same value under PostgreSQL's READ COMMITTED; UNIQUE(secret_id,
+	// version) then failed one of them with a constraint error.
+	var next int
+	if err := tx.QueryRowContext(ctx,
+		`UPDATE secrets SET current_version = current_version + 1, updated_at = ? WHERE id = ? RETURNING current_version`,
+		now, secretID).Scan(&next); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	next := current + 1
 
 	sealed, err := seal(secretID, next)
 	if err != nil {
@@ -226,10 +233,6 @@ func (s *Store) CreateSecretVersion(ctx context.Context, secretID int64, content
 		secretID, next, sealed.PayloadEnc, sealed.PayloadSHA256, sealed.SizeBytes, contentType,
 		createdBy, now).Scan(&id)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE secrets SET current_version = ?, updated_at = ? WHERE id = ?`,
-		next, now, secretID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

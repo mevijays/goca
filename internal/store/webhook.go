@@ -244,31 +244,51 @@ func (s *Store) ListWebhookDeliveries(ctx context.Context, webhookID int64, limi
 // than one process against a shared database (the documented Postgres
 // backend supports exactly that deployment shape): two dispatchers polling
 // concurrently must never both deliver the same event. This is a single
-// UPDATE ... WHERE id IN (subquery) ... RETURNING statement, which is
-// portable to both backends without a dialect branch (RETURNING is already
-// used elsewhere in this package) and needs no explicit row lock - the UPDATE
-// itself is what serializes concurrent claimants: on Postgres, a second
-// UPDATE targeting an overlapping row set blocks on the first's row lock,
-// then re-evaluates its WHERE clause and finds the row no longer pending, so
-// it is excluded; on SQLite, writes are already serialized at the database
-// level. A row already claimed by staleAfter ago is treated as abandoned (the
+// UPDATE ... WHERE id IN (subquery) ... RETURNING statement, portable to both
+// backends without a dialect branch.
+//
+// The claim conditions are deliberately repeated on the OUTER update, not only
+// inside the subquery. On PostgreSQL (READ COMMITTED), a second claimant whose
+// subquery picked the same rows blocks on the first's row locks, and once
+// they commit it re-checks only the outer WHERE against the new row version -
+// the subquery is not re-run. With the conditions only in the subquery, that
+// re-check was just "id IN (...)", which still matched, so the row was claimed
+// again: measured at 200 of 300 deliveries claimed by more than one of eight
+// concurrent claimants, some four times (TestClaimDueWebhookDeliveriesIsExclusive
+// against postgres:16). With them repeated outside, the re-check sees
+// claimed_at just set and skips the row. On SQLite, writes are serialized at
+// the database level anyway.
+//
+// That alone still left PostgreSQL claimants blocking on each other's row
+// locks - acquired in different orders, so occasionally "deadlock detected"
+// (seen in the same test). On PostgreSQL the subquery therefore also takes
+// FOR UPDATE SKIP LOCKED, the standard job-queue idiom: a claimant skips rows
+// another one already holds instead of waiting for them, so claimants never
+// block each other at all. SQLite has no such clause and needs none. A row already claimed by staleAfter ago is treated as abandoned (the
 // claiming process crashed before recording a result) and is reclaimable.
 func (s *Store) ClaimDueWebhookDeliveries(ctx context.Context, now time.Time, staleAfter time.Duration, limit int) ([]*WebhookDelivery, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	staleBefore := now.Add(-staleAfter)
+	lock := ""
+	if s.postgres {
+		lock = " FOR UPDATE SKIP LOCKED"
+	}
 	rows, err := s.db.QueryContext(ctx, `UPDATE webhook_deliveries
 	 SET claimed_at = ?
 	 WHERE id IN (
 	   SELECT id FROM webhook_deliveries
 	   WHERE (status = ? OR (status = ? AND next_attempt IS NOT NULL AND next_attempt <= ?))
 	     AND (claimed_at IS NULL OR claimed_at <= ?)
-	   ORDER BY id ASC LIMIT ?
+	   ORDER BY id ASC LIMIT ?`+lock+`
 	 )
+	   AND (status = ? OR (status = ? AND next_attempt IS NOT NULL AND next_attempt <= ?))
+	   AND (claimed_at IS NULL OR claimed_at <= ?)
 	 RETURNING id, webhook_id, event, payload, status, attempts,
 	 last_status, last_error, next_attempt, created_at, updated_at`,
-		now, WebhookStatusPending, WebhookStatusFailed, now, staleBefore, limit)
+		now, WebhookStatusPending, WebhookStatusFailed, now, staleBefore, limit,
+		WebhookStatusPending, WebhookStatusFailed, now, staleBefore)
 	if err != nil {
 		return nil, err
 	}
