@@ -1,0 +1,77 @@
+# How goca clusters: every replica is stateless and they all share one
+# PostgreSQL database - which is the only place state lives (ACME nonces,
+# sign-in throttling, sessions, webhook queue, everything). There is no
+# leader and no inter-replica traffic; scale by changing replicaCount.
+# See docs/kubernetes/ha.md for why this rather than Raft inside goca.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/mevijays/goca
+  tag: ""            # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []  # e.g. [{name: my-registry}]
+
+# goca's config.yaml, which holds the master key that seals every private key
+# and secret - so it comes from a Secret you create, never from values.
+# Generate it with `goca setup --database-driver postgres ...` (see
+# docs/kubernetes/ha.md), then:
+#   kubectl create secret generic goca-config --from-file=config.yaml
+config:
+  existingSecret: goca-config
+  key: config.yaml
+
+# The backend config.yaml points at. On Kubernetes this is PostgreSQL, always -
+# replicas share all state through it, and SQLite (a single file) would be
+# corrupted by concurrent pods. The chart refuses to render anything else, even
+# for one replica, so scaling up later can never silently hit SQLite.
+database:
+  driver: postgres
+
+# goca's own listen port (server.port in config.yaml).
+containerPort: 8080
+
+service:
+  type: ClusterIP
+  port: 80
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Spread replicas across nodes so losing one node never takes goca down.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# Seconds a terminating pod keeps serving after it is removed from the
+# Service's endpoints, so in-flight and just-routed requests complete.
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+# Optional Istio exposure. goca's server.base_url must be the URL clients use
+# (ACME directory URLs are built from it).
+istio:
+  enabled: false
+  gateway: istio-system/public-gateway
+  hosts: []          # e.g. [goca.k8s.example.com]
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -27,7 +27,7 @@ type Config struct {
 	Path string `yaml:"-"`
 
 	DataDir  string         `yaml:"data_dir"`
-	DBPath   string         `yaml:"db_path"`
+	DBPath   string         `yaml:"db_path,omitempty"`
 	Database DatabaseConfig `yaml:"database"`
 	Server   ServerConfig   `yaml:"server"`
 	Security SecurityConfig `yaml:"security"`
@@ -416,12 +416,15 @@ func (c *Config) Validate() error {
 	if c.DataDir == "" {
 		return errors.New("data_dir is required")
 	}
-	if c.DBPath == "" {
-		c.DBPath = filepath.Join(c.DataDir, "goca.db")
-	}
 	switch c.Database.Driver {
 	case "", DBDriverSQLite:
 		c.Database.Driver = DBDriverSQLite
+		// Only SQLite uses a database file. Defaulting it for PostgreSQL too
+		// wrote a path from the machine `goca setup` ran on into configs
+		// destined for a Kubernetes Secret shared by every replica.
+		if c.DBPath == "" {
+			c.DBPath = filepath.Join(c.DataDir, "goca.db")
+		}
 	case DBDriverPostgres:
 		if c.Database.Host == "" {
 			return errors.New("database.host is required when database.driver is postgres")

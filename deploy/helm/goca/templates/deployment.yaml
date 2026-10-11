@@ -1,0 +1,113 @@
+{{- include "goca.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "goca.fullname" . }}
+  labels: {{- include "goca.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  # Replicas are interchangeable, so roll one at a time and never drop below
+  # the full count: a new pod must be Ready before an old one goes.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: {{- include "goca.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "goca.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{ end }}
+      annotations:
+        # Roll the pods when the config Secret's name or key changes.
+        checksum/config-ref: {{ printf "%s/%s" .Values.config.existingSecret .Values.config.key | sha256sum | trunc 16 }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{ end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels: {{- include "goca.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: goca
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "web"]
+          env:
+            - name: GOCA_CONFIG
+              value: /etc/goca/config.yaml
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+          # Schema setup runs under a PostgreSQL advisory lock, so during a
+          # rollout a starting pod may wait its turn; give it room before the
+          # liveness probe starts counting.
+          startupProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            # Process health only - never the database, or a database blip
+            # would restart every replica at once.
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            # Database reachable: a replica that cannot reach PostgreSQL is
+            # taken out of the Service rather than failing requests.
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/goca
+              readOnly: true
+            # config.yaml's data_dir; with PostgreSQL nothing durable is
+            # written here, so it is scratch space only.
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ .Values.config.existingSecret }}
+            items:
+              - key: {{ .Values.config.key }}
+                path: config.yaml
+        - name: data
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

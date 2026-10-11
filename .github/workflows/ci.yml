@@ -78,3 +78,22 @@ jobs:
             VERSION=ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  helm-chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Lint
+        run: helm lint deploy/helm/goca
+
+      # The chart must refuse anything but PostgreSQL: replicas share state
+      # through the database, and SQLite would be corrupted by them.
+      - name: Refuses SQLite
+        run: |
+          if helm template t deploy/helm/goca --set database.driver=sqlite --set replicaCount=1 >/dev/null 2>&1; then
+            echo "the chart rendered with database.driver=sqlite"; exit 1
+          fi
+          helm template t deploy/helm/goca >/dev/null

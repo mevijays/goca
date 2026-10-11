@@ -30,6 +30,7 @@ nav:
   - Kubernetes:
       - cert-manager demo: kubernetes/cert-manager.md
       - CSI driver demo: kubernetes/csi.md
+      - High availability: kubernetes/ha.md
       - External Secrets Operator: eso.md
 
 markdown_extensions:

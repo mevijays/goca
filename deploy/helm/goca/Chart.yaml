@@ -1,0 +1,11 @@
+apiVersion: v2
+name: goca
+description: >-
+  goca certificate authority and secret manager, run as several stateless
+  replicas over a shared PostgreSQL database.
+type: application
+version: 0.1.0
+appVersion: "v0.1.6-dev"
+home: https://mevijays.github.io/goca/kubernetes/ha/
+sources:
+  - https://github.com/mevijays/goca

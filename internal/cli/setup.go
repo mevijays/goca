@@ -288,6 +288,11 @@ func runSetup(ctx context.Context, f *setupFlags) error {
 		// Stashed until the master key exists; encrypted just below, same as
 		// the LDAP bind password.
 		d.Password = dbPassword
+		// config.Default() points db_path at the operator's own home
+		// directory; with PostgreSQL it is unused, and writing it would leak
+		// a local path into a config that typically ends up in a Kubernetes
+		// Secret shared by every replica.
+		cfg.DBPath = ""
 		kv("database", fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=%s", d.User, d.Host, d.Port, d.Name, d.SSLMode))
 	} else {
 		cfg.Database.Driver = config.DBDriverSQLite

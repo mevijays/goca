@@ -1,0 +1,15 @@
+{{- if .Values.istio.enabled }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "goca.fullname" . }}
+  labels: {{- include "goca.labels" . | nindent 4 }}
+spec:
+  gateways: [{{ .Values.istio.gateway | quote }}]
+  hosts: {{- toYaml .Values.istio.hosts | nindent 4 }}
+  http:
+    - route:
+        - destination:
+            host: {{ include "goca.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port: {number: {{ .Values.service.port }}}
+{{- end }}

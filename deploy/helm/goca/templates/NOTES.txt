@@ -1,0 +1,6 @@
+goca is running as {{ .Values.replicaCount }} replica(s) over PostgreSQL.
+
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "goca.fullname" . }} 8080:{{ .Values.service.port }}
+
+Every replica is equivalent and stateless; scale with --set replicaCount=N.
