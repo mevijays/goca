@@ -1554,7 +1554,23 @@ func scanUser(sc interface{ Scan(...any) error }) (*User, error) {
 }
 
 // UpsertUser creates or refreshes a user record (used after each LDAP login).
+//
+// Two callers can see the same username as new at once - every replica runs
+// EnsureLocalAdmin at startup, and a directory user's first sign-in can reach
+// two replicas together - so an insert can lose to a concurrent one on the
+// unique username. That used to surface as an error (and a replica failing
+// to start); the loser now re-reads the row and refreshes it instead.
 func (s *Store) UpsertUser(ctx context.Context, u *User) (*User, error) {
+	out, err := s.upsertUserOnce(ctx, u)
+	if err != nil {
+		if _, getErr := s.GetUserByName(ctx, u.Username); getErr == nil {
+			return s.upsertUserOnce(ctx, u) // lost the insert race: now an update
+		}
+	}
+	return out, err
+}
+
+func (s *Store) upsertUserOnce(ctx context.Context, u *User) (*User, error) {
 	existing, err := s.GetUserByName(ctx, u.Username)
 	switch {
 	case err == nil:

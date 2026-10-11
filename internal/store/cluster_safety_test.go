@@ -237,3 +237,47 @@ func TestConcurrentOpenOnFreshPostgres(t *testing.T) {
 		t.Errorf("a replica failed to start against a fresh database: %v", err)
 	}
 }
+
+// TestUpsertUserConcurrentFirstSighting: every replica runs EnsureLocalAdmin
+// at startup, and an LDAP/OIDC user's first sign-in can reach two replicas at
+// once - both upsert a username neither has seen. Get-then-insert let the
+// slower one fail on the unique index, crashing a starting replica.
+func TestUpsertUserConcurrentFirstSighting(t *testing.T) {
+	for name, st := range openTestStores(t) {
+		t.Run(name, func(t *testing.T) {
+			username := fmt.Sprintf("racer-%d", time.Now().UnixNano())
+			const n = 12
+			errs := make(chan error, n)
+			ids := make(chan int64, n)
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					u, err := st.UpsertUser(context.Background(), &User{Username: username, Role: RoleAdmin, Source: SourceLocal})
+					if err != nil {
+						errs <- err
+						return
+					}
+					ids <- u.ID
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(errs)
+			close(ids)
+			for err := range errs {
+				t.Errorf("concurrent first upsert failed: %v", err)
+			}
+			seen := map[int64]bool{}
+			for id := range ids {
+				seen[id] = true
+			}
+			if len(seen) != 1 {
+				t.Fatalf("one username produced %d user rows", len(seen))
+			}
+		})
+	}
+}
